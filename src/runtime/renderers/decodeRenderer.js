@@ -6,19 +6,17 @@ const {
   encodingLabel
 } = require("../shared/decodePayload");
 
-const ENCODING_TINT = Object.freeze({
-  jwt: "#7C3AED",
-  escaped_json: "#0F766E",
-  url: "#2563EB",
-  base64: "#D97706"
-});
+const ATTACHMENT_TYPE = "plugin.pasty.awesome.decode.preview";
+const ATTACHMENT_KEY = "primary";
 
 function buttonsFor(payload) {
   const copyJsonEnabled =
     payload.encoding === "jwt" || payload.decodedIsJSON === true;
+  const toggleTitle = payload.expanded === true ? "Show Less" : "Show More";
   return [
     { id: "copy-decoded", title: "Copy Decoded", isEnabled: true },
-    { id: "copy-json", title: "Copy as JSON", isEnabled: copyJsonEnabled }
+    { id: "copy-json", title: "Copy as JSON", isEnabled: copyJsonEnabled },
+    { id: "toggle-expand", title: toggleTitle, isEnabled: true }
   ];
 }
 
@@ -27,10 +25,11 @@ function resolveAttachment(input) {
   if (!payload) {
     return {
       displayName: "Decoded Preview",
-      tintHex: "#6B7280",
+      tintHex: null,
       buttons: [
         { id: "copy-decoded", title: "Copy Decoded", isEnabled: false },
-        { id: "copy-json", title: "Copy as JSON", isEnabled: false }
+        { id: "copy-json", title: "Copy as JSON", isEnabled: false },
+        { id: "toggle-expand", title: "Show More", isEnabled: false }
       ]
     };
   }
@@ -38,7 +37,8 @@ function resolveAttachment(input) {
   const label = encodingLabel(payload.encoding);
   return {
     displayName: `Decoded Preview · ${label}`,
-    tintHex: ENCODING_TINT[payload.encoding] || "#6B7280",
+    // tintHex: null lets the host apply its theme accent automatically.
+    tintHex: null,
     buttons: buttonsFor(payload)
   };
 }
@@ -69,6 +69,30 @@ async function invokeOperation(input, ctx) {
         userMessage: "JSON parse failed, copied raw"
       });
     }
+  }
+
+  if (buttonID === "toggle-expand") {
+    const nextExpanded = payload.expanded !== true;
+    const nextPayload = { ...payload, expanded: nextExpanded };
+    const attachmentType =
+      input?.attachment?.attachmentType || ATTACHMENT_TYPE;
+    const attachmentKey =
+      input?.attachment?.attachmentKey || ATTACHMENT_KEY;
+
+    await ctx.host.item.setAttachments({
+      attachments: [
+        {
+          attachmentType,
+          attachmentKey,
+          payloadJson: JSON.stringify(nextPayload),
+          attachmentSyncScope: "syncable"
+        }
+      ]
+    });
+
+    return rendererResult.success({
+      userMessage: nextExpanded ? "Expanded" : "Collapsed"
+    });
   }
 
   return rendererResult.success();

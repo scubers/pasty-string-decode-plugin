@@ -95,7 +95,20 @@ const activeScenario = computed(() => attachmentScenarios.find(
   (scenario) => scenario.id === selectedScenarioID.value
 ) || attachmentScenarios[0]);
 
-const activeButtons = computed(() => activeScenario.value?.bootstrap?.buttons ?? []);
+// Local override for the expanded flag — simulates the runtime round-trip:
+// host click -> runtime setAttachments -> attachment-updated event -> UI re-renders.
+const expandedOverride = ref(false);
+
+const activeButtons = computed(() => {
+  const buttons = activeScenario.value?.bootstrap?.buttons ?? [];
+  return buttons.map((button) => {
+    if (button.id !== "toggle-expand") return button;
+    return {
+      ...button,
+      title: expandedOverride.value ? "Show Less" : "Show More"
+    };
+  });
+});
 const activeDefaultButtonID = computed(() => activeScenario.value?.bootstrap?.defaultButtonID ?? null);
 
 const componentKey = computed(() => `renderer:${activeScenario.value?.id ?? "unknown"}`);
@@ -142,6 +155,9 @@ function applyPreviewState() {
     return;
   }
 
+  // Reset the simulated expanded flag whenever the scenario changes.
+  expandedOverride.value = false;
+
   const bootstrap = clone(scenario.bootstrap);
   window.__PASTY_PLUGIN_BOOTSTRAP__ = bootstrap;
   window.__PASTY_PLUGIN_ACTION_BOOTSTRAP__ = null;
@@ -160,6 +176,13 @@ function applyPreviewState() {
   statusMessage.value = `Renderer preview loaded: ${scenario.label}`;
 }
 
+function dispatchRendererAction(actionID, params = {}) {
+  // Mirror the production host behavior: when a host button is clicked,
+  // the host dispatches `pasty-plugin-renderer-action` into the WebView so
+  // any onHostInvoke listeners react.
+  dispatchEvent("pasty-plugin-renderer-action", { actionID, params });
+}
+
 function syncQuery() {
   const next = new URL(window.location.href);
   next.searchParams.set("view", "renderer");
@@ -169,6 +192,12 @@ function syncQuery() {
 }
 
 function previewHostButton(button) {
+  if (button.id === "toggle-expand") {
+    expandedOverride.value = !expandedOverride.value;
+    dispatchRendererAction("toggle-expand");
+    statusMessage.value = `Dispatched renderer-action: toggle-expand (now ${expandedOverride.value ? "expanded" : "compact"})`;
+    return;
+  }
   statusMessage.value = `Host preview button clicked: ${button.title}`;
   console.info("preview.hostButton", {
     scenarioID: selectedScenarioID.value,

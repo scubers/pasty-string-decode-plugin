@@ -69,7 +69,8 @@ function createDecodePayload(detectionResult) {
     decodedIsJSON,
     jwt,
     originalLength: original.length,
-    decodedLength: decoded.length
+    decodedLength: decoded.length,
+    expanded: false
   };
 }
 
@@ -105,7 +106,10 @@ function decodeDecodePayload(payloadJson) {
     decodedIsJSON: Boolean(parsed.decodedIsJSON),
     jwt: isPlainObject(parsed.jwt) ? parsed.jwt : null,
     originalLength: Number(parsed.originalLength) || 0,
-    decodedLength: Number(parsed.decodedLength) || 0
+    decodedLength: Number(parsed.decodedLength) || 0,
+    // Forward-compat: older payloads without `expanded` default to compact.
+    expanded:
+      typeof parsed.expanded === "boolean" ? parsed.expanded : false
   };
 }
 

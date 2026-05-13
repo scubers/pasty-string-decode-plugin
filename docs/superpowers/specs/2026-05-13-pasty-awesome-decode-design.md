@@ -261,7 +261,9 @@ Path A 先尝试；若 Path A 不命中再走 Path B。共同输出：
     decodedIsJSON: <bool>,
     jwt: { header, payload } | null,  // 仅 encoding=jwt 时有
     originalLength: <number>,
-    decodedLength: <number>
+    decodedLength: <number>,
+    expanded: false                   // 新建 attachment 默认 compact;
+                                      // toggle-expand 按钮翻转此布尔
   }),
   searchProjection: {
     scope: "pasty_awesome_decode",
@@ -303,8 +305,15 @@ Path A 先尝试；若 Path A 不命中再走 Path B。共同输出：
 |---|---|---|---|
 | `copy-decoded` | Copy Decoded | 始终启用 | 复制 `payload.decoded`（JWT 即 `{header,payload}` 整段 JSON） |
 | `copy-json` | Copy as JSON | 仅 `decodedIsJSON === true` 或 `encoding === "jwt"` | 对 `payload.decoded` 做 `JSON.parse` 后 `JSON.stringify(_, null, 2)` 复制 |
+| `toggle-expand` | `Show More` / `Show Less` | 始终启用 | 翻转 `payload.expanded` 后通过 `ctx.host.item.setAttachments` 替换当前 attachment group，触发 UI 重渲染 |
 
-webview UI 组件不订阅按钮、不渲染按钮、不处理 click，避免与宿主重复。
+`toggle-expand` 的 title 根据当前 `payload.expanded` 动态返回：`expanded === true` 显示 `Show Less`，否则显示 `Show More`。
+
+runtime 处理点击时构造 `{ attachments: [{ attachmentType, attachmentKey, payloadJson, attachmentSyncScope: "syncable" }] }` 一份完整 group 传给 `setAttachments`，新 `payloadJson` 即翻转后的 payload 重新 stringify 结果。
+
+调用 `setAttachments` 需要 manifest `permissions` 包含 `"setAttachment"`。
+
+webview UI 组件不订阅按钮、不渲染按钮、不处理 click，避免与宿主重复。它只读 `payload.expanded`：`false` 时主体加 `max-height: 120px` + 底部 fade-out 遮罩做 compact；`true` 时移除限制让内容自然展开。Compact 模式下 `tintHex` 返回 `null`，让宿主自己的卡片徽章用主题 accent 着色，不再按 encoding 上色。
 
 ### 5.4 反馈
 

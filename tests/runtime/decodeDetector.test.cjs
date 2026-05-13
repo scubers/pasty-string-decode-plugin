@@ -531,6 +531,48 @@ test("decodePayload.createDecodePayload encodes detection result correctly", () 
   assert.equal(payload.decodedIsJSON, false);
   assert.equal(payload.truncated, false);
   assert.equal(payload.jwt, null);
+  // New attachments start in compact mode.
+  assert.equal(payload.expanded, false);
+});
+
+test("decodePayload.decodeDecodePayload preserves expanded flag when present", () => {
+  const { decodeDecodePayload } = loadPayloadModule();
+  const json = JSON.stringify({
+    kind: "decode_preview",
+    version: 1,
+    encoding: "base64",
+    original: "abcd",
+    truncated: false,
+    decoded: "x",
+    decodedIsJSON: false,
+    jwt: null,
+    originalLength: 4,
+    decodedLength: 1,
+    expanded: true
+  });
+  const out = decodeDecodePayload(json);
+  assert.ok(out);
+  assert.equal(out.expanded, true);
+});
+
+test("decodePayload.decodeDecodePayload defaults expanded to false when absent", () => {
+  const { decodeDecodePayload } = loadPayloadModule();
+  const json = JSON.stringify({
+    kind: "decode_preview",
+    version: 1,
+    encoding: "base64",
+    original: "abcd",
+    truncated: false,
+    decoded: "x",
+    decodedIsJSON: false,
+    jwt: null,
+    originalLength: 4,
+    decodedLength: 1
+    // expanded intentionally omitted
+  });
+  const out = decodeDecodePayload(json);
+  assert.ok(out);
+  assert.equal(out.expanded, false);
 });
 
 test("decodePayload.encodingLabel returns the display label", () => {

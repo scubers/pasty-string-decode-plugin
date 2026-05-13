@@ -37,7 +37,8 @@ function createDecodeScenario({
       },
       buttons: [
         { id: "copy-decoded", title: "Copy Decoded", isEnabled: true },
-        { id: "copy-json", title: "Copy as JSON", isEnabled: copyJsonEnabled }
+        { id: "copy-json", title: "Copy as JSON", isEnabled: copyJsonEnabled },
+        { id: "toggle-expand", title: "Show More", isEnabled: true }
       ]
     }
   };
@@ -94,7 +95,8 @@ export const attachmentScenarios = [
       decodedIsJSON: true,
       jwt: { header: JWT_HEADER, payload: JWT_PAYLOAD },
       originalLength: JWT_ORIGINAL.length,
-      decodedLength: JWT_DECODED.length
+      decodedLength: JWT_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: true
   }),
@@ -112,7 +114,8 @@ export const attachmentScenarios = [
       decodedIsJSON: false,
       jwt: null,
       originalLength: BASE64_PLAINTEXT_ORIGINAL.length,
-      decodedLength: BASE64_PLAINTEXT_DECODED.length
+      decodedLength: BASE64_PLAINTEXT_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: false
   }),
@@ -130,7 +133,8 @@ export const attachmentScenarios = [
       decodedIsJSON: true,
       jwt: null,
       originalLength: BASE64_JSON_ORIGINAL.length,
-      decodedLength: BASE64_JSON_DECODED.length
+      decodedLength: BASE64_JSON_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: true
   }),
@@ -148,7 +152,8 @@ export const attachmentScenarios = [
       decodedIsJSON: false,
       jwt: null,
       originalLength: URL_ORIGINAL.length,
-      decodedLength: URL_DECODED.length
+      decodedLength: URL_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: false
   }),
@@ -166,7 +171,8 @@ export const attachmentScenarios = [
       decodedIsJSON: true,
       jwt: null,
       originalLength: ESCAPED_JSON_ORIGINAL.length,
-      decodedLength: ESCAPED_JSON_DECODED.length
+      decodedLength: ESCAPED_JSON_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: true
   }),
@@ -184,7 +190,8 @@ export const attachmentScenarios = [
       decodedIsJSON: true,
       jwt: null,
       originalLength: ESCAPED_JSON_LOG_ORIGINAL.length,
-      decodedLength: ESCAPED_JSON_LOG_DECODED.length
+      decodedLength: ESCAPED_JSON_LOG_DECODED.length,
+      expanded: false
     },
     copyJsonEnabled: true
   })

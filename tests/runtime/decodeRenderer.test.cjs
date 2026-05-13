@@ -21,23 +21,34 @@ function buildPayloadJson(overrides = {}) {
     decodedIsJSON: false,
     jwt: null,
     originalLength: 20,
-    decodedLength: 13
+    decodedLength: 13,
+    expanded: false
   };
   return JSON.stringify({ ...base, ...overrides });
 }
 
 function captureClipboardCtx() {
   let copied = null;
+  let setAttachmentsCalls = [];
   const ctx = {
     host: {
       clipboard: {
         async copyText(value) {
           copied = value;
         }
+      },
+      item: {
+        async setAttachments(payload) {
+          setAttachmentsCalls.push(payload);
+        }
       }
     }
   };
-  return { ctx, getCopied: () => copied };
+  return {
+    ctx,
+    getCopied: () => copied,
+    getSetAttachmentsCalls: () => setAttachmentsCalls
+  };
 }
 
 // ─── resolveAttachment ──────────────────────────────────────────────────────
@@ -49,11 +60,43 @@ test("resolveAttachment returns Copy Decoded enabled + Copy as JSON disabled for
   });
   assert.ok(out.displayName);
   const buttonIDs = out.buttons.map((b) => b.id);
-  assert.deepEqual(buttonIDs, ["copy-decoded", "copy-json"]);
+  assert.deepEqual(buttonIDs, ["copy-decoded", "copy-json", "toggle-expand"]);
   const copyDecoded = out.buttons.find((b) => b.id === "copy-decoded");
   const copyJson = out.buttons.find((b) => b.id === "copy-json");
   assert.equal(copyDecoded.isEnabled, true);
   assert.equal(copyJson.isEnabled, false);
+});
+
+test("resolveAttachment does not set encoding-specific tintHex (host accent applies)", () => {
+  const { resolveAttachment } = loadRenderer();
+  for (const encoding of ["jwt", "escaped_json", "url", "base64"]) {
+    const out = resolveAttachment({
+      attachment: { payloadJson: buildPayloadJson({ encoding }) }
+    });
+    // Either omitted or null — never a hardcoded color.
+    if ("tintHex" in out) {
+      assert.equal(out.tintHex, null, `encoding ${encoding} should have null tintHex`);
+    }
+  }
+});
+
+test("resolveAttachment toggle-expand title reflects payload.expanded flag", () => {
+  const { resolveAttachment } = loadRenderer();
+  const collapsed = resolveAttachment({
+    attachment: { payloadJson: buildPayloadJson({ expanded: false }) }
+  });
+  const toggleCollapsed = collapsed.buttons.find((b) => b.id === "toggle-expand");
+  assert.ok(toggleCollapsed);
+  assert.equal(toggleCollapsed.title, "Show More");
+  assert.equal(toggleCollapsed.isEnabled, true);
+
+  const expanded = resolveAttachment({
+    attachment: { payloadJson: buildPayloadJson({ expanded: true }) }
+  });
+  const toggleExpanded = expanded.buttons.find((b) => b.id === "toggle-expand");
+  assert.ok(toggleExpanded);
+  assert.equal(toggleExpanded.title, "Show Less");
+  assert.equal(toggleExpanded.isEnabled, true);
 });
 
 test("resolveAttachment enables Copy as JSON when decodedIsJSON is true", () => {
@@ -118,6 +161,56 @@ test("resolveAttachment returns failure-state buttons when payloadJson is invali
   for (const button of out.buttons) {
     assert.equal(button.isEnabled, false);
   }
+});
+
+test("invokeOperation toggle-expand flips expanded flag via setAttachments", async () => {
+  const { invokeOperation } = loadRenderer();
+  const { ctx, getSetAttachmentsCalls } = captureClipboardCtx();
+  const result = await invokeOperation(
+    {
+      attachment: {
+        attachmentType: "plugin.pasty.awesome.decode.preview",
+        attachmentKey: "primary",
+        payloadJson: buildPayloadJson({ expanded: false })
+      },
+      buttonID: "toggle-expand"
+    },
+    ctx
+  );
+  assert.equal(result.success, true);
+  const calls = getSetAttachmentsCalls();
+  assert.equal(calls.length, 1);
+  const arg = calls[0];
+  assert.ok(arg && Array.isArray(arg.attachments));
+  assert.equal(arg.attachments.length, 1);
+  const updated = arg.attachments[0];
+  assert.equal(updated.attachmentType, "plugin.pasty.awesome.decode.preview");
+  assert.equal(updated.attachmentKey, "primary");
+  const parsed = JSON.parse(updated.payloadJson);
+  assert.equal(parsed.expanded, true);
+  assert.match(result.userMessage || "", /Expanded/);
+});
+
+test("invokeOperation toggle-expand flips expanded=true back to false", async () => {
+  const { invokeOperation } = loadRenderer();
+  const { ctx, getSetAttachmentsCalls } = captureClipboardCtx();
+  const result = await invokeOperation(
+    {
+      attachment: {
+        attachmentType: "plugin.pasty.awesome.decode.preview",
+        attachmentKey: "primary",
+        payloadJson: buildPayloadJson({ expanded: true })
+      },
+      buttonID: "toggle-expand"
+    },
+    ctx
+  );
+  assert.equal(result.success, true);
+  const calls = getSetAttachmentsCalls();
+  assert.equal(calls.length, 1);
+  const parsed = JSON.parse(calls[0].attachments[0].payloadJson);
+  assert.equal(parsed.expanded, false);
+  assert.match(result.userMessage || "", /Collapsed/);
 });
 
 // ─── invokeOperation ───────────────────────────────────────────────────────

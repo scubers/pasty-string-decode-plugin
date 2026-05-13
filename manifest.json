@@ -13,7 +13,7 @@
     "nodeEntry": "dist/runtime/index.cjs",
     "uiRoot": "dist/ui"
   },
-  "permissions": [],
+  "permissions": ["setAttachment"],
   "attachmentRenderers": [
     {
       "id": "decode-renderer",
