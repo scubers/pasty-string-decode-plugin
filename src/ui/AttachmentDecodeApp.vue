@@ -250,12 +250,9 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-/* Panel — uses host theme tokens so it blends with the host card */
+/* Panel — no own border/padding; native card already provides the frame */
 .decode-panel {
-  background: var(--pasty-surface-elevated, transparent);
-  border: 1px solid var(--pasty-border, transparent);
-  border-radius: 8px;
-  padding: 8px;
+  background: transparent;
   margin: 0;
 }
 
