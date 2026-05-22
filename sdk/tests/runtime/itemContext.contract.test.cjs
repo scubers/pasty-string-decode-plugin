@@ -81,15 +81,11 @@ test("ResolveAttachmentInput extends ItemContext and adds {attachment, declaredA
   assert.ok(fields.has("declaredActions"), "must have declaredActions");
 });
 
-test("AttachmentOperationInput extends ItemContext and adds handler fields", () => {
-  assert.ok(ctxDts.includes("AttachmentOperationInput extends ItemContext"), "AttachmentOperationInput must extend ItemContext");
-  const fields = fieldsOf(ctxDts, "AttachmentOperationInput");
-  assert.ok(fields, "AttachmentOperationInput must be declared");
-  assert.ok(fields.has("attachment"), "must have attachment");
-  assert.ok(fields.has("buttonID"), "must have buttonID");
-  assert.ok(fields.has("params"), "must have params");
-  assert.ok(fields.has("triggerSource"), "must have triggerSource");
-  assert.ok(!fields.has("dataBase64"), "must not expose dataBase64");
+test("AttachmentOperationInput is not present in ctx.d.ts (removed with invokeOperation)", () => {
+  assert.ok(
+    !ctxDts.includes("AttachmentOperationInput"),
+    "AttachmentOperationInput must be removed after invokeOperation was deleted from AttachmentRendererHandler"
+  );
 });
 
 test("ActionSessionResolveInput extends ItemContext and adds {action}", () => {
@@ -109,19 +105,60 @@ test("ActionRunInput extends ItemContext and adds {actionID, draft, buttonID}", 
   assert.ok(!fields.has("text"), "ActionRunInput must not carry legacy text field");
 });
 
-// ─── HostItem and HostAction verb surface ────────────────────────────────────
+// ─── HostClient verb surface (generated) ─────────────────────────────────────
 
-test("HostItem declares materializeImagePath and readAttachment", () => {
-  const fields = fieldsOf(ctxDts, "HostItem");
-  assert.ok(fields, "HostItem must be declared");
-  assert.ok(fields.has("materializeImagePath"), "HostItem must declare materializeImagePath");
-  assert.ok(fields.has("readAttachment"), "HostItem must declare readAttachment");
+const hostClientsDts = fs.readFileSync(
+  path.resolve(sdkRoot, "dist/generated/hostClients.generated.d.ts"),
+  "utf8"
+);
+
+test("HostClient.item declares materializeImagePath and readAttachment", () => {
+  const fields = fieldsOf(hostClientsDts, "HostClient");
+  assert.ok(fields, "HostClient must be declared in hostClients.generated.d.ts");
+  assert.ok(fields.has("item"), "HostClient must have item namespace");
+  assert.ok(
+    hostClientsDts.includes("materializeImagePath"),
+    "HostClient must declare item.materializeImagePath"
+  );
+  assert.ok(
+    hostClientsDts.includes("readAttachment"),
+    "HostClient must declare item.readAttachment"
+  );
 });
 
-test("HostAction declares allocateImageTempPath", () => {
-  const fields = fieldsOf(ctxDts, "HostAction");
-  assert.ok(fields, "HostAction must be declared");
-  assert.ok(fields.has("allocateImageTempPath"), "HostAction must declare allocateImageTempPath");
+test("HostClient.action declares allocateImageTempPath", () => {
+  const fields = fieldsOf(hostClientsDts, "HostClient");
+  assert.ok(fields, "HostClient must be declared in hostClients.generated.d.ts");
+  assert.ok(fields.has("action"), "HostClient must have action namespace");
+  assert.ok(
+    hostClientsDts.includes("allocateImageTempPath"),
+    "HostClient must declare action.allocateImageTempPath"
+  );
+});
+
+// ─── AttachmentResolveResult shouldDisplay field ──────────────────────────────
+
+test("AttachmentResolveResult declares optional shouldDisplay boolean", () => {
+  const fields = fieldsOf(ctxDts, "AttachmentResolveResult");
+  assert.ok(fields, "AttachmentResolveResult must be declared in ctx.d.ts");
+  assert.ok(fields.has("shouldDisplay"), "AttachmentResolveResult must declare shouldDisplay");
+});
+
+test("AttachmentRendererHandler does not declare invokeOperation", () => {
+  const fields = fieldsOf(ctxDts, "AttachmentRendererHandler");
+  assert.ok(fields, "AttachmentRendererHandler must be declared");
+  assert.ok(!fields.has("invokeOperation"), "AttachmentRendererHandler must not declare invokeOperation");
+  assert.ok(fields.has("resolveAttachment"), "AttachmentRendererHandler must declare resolveAttachment");
+});
+
+test("ActionResolveResult.buttons is optional (no longer required)", () => {
+  // Verify by checking the d.ts text contains 'buttons?' (optional) not 'buttons:' (required)
+  // The fieldsOf function strips the '?' from names, so we check the raw text
+  const resolveResultMatch = ctxDts.match(/interface ActionResolveResult[^{]*\{([^}]+)\}/s);
+  assert.ok(resolveResultMatch, "ActionResolveResult must be in ctx.d.ts");
+  const body = resolveResultMatch[1];
+  assert.ok(body.includes("buttons?"), "ActionResolveResult.buttons must be optional (buttons?)");
+  assert.ok(!body.match(/^\s+buttons:/m), "ActionResolveResult.buttons must not be required");
 });
 
 // ─── ClipboardItem must not have legacy text field ───────────────────────────

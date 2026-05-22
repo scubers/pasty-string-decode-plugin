@@ -1,3 +1,4 @@
-export { pasty } from './pasty.js';
-export type { PluginContextError } from './pasty.js';
-export type { ClipboardItem, AttachmentPayload, Draft, ActionSession, PluginThemeTokenSnapshot } from '../runtime/types/data.js';
+// SDK UI surface — re-export of codegen output.
+export * from '../generated/INDEX.ui.generated.js';
+export { defineMessage } from './defineMessage.js';
+export type { UIMessageContract } from './defineMessage.js';

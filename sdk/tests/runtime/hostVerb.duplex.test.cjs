@@ -1,7 +1,7 @@
 // Pasty - Copyright (c) 2026. MIT License.
-// Duplex protocol test: verbRequest → verbResponse round-trip through the bridge.
+// Duplex protocol test: host-call request/response round-trip through the bridge.
 // Uses a minimal fixture bridge (testBridge.cjs) that mirrors the real bridge protocol
-// to verify frame shapes and promise resolution without spawning a full plugin process.
+// to verify ipcBus frame shapes and promise resolution without spawning a full plugin process.
 
 "use strict";
 
@@ -72,81 +72,85 @@ function run(writeFrames, timeoutMs) {
   return runDuplex(bridgePath, writeFrames, timeoutMs);
 }
 
-test("bridge emits verbRequest frame when invoke triggers materializeImagePath", async () => {
+test("bridge emits host-call frame when runtime.invokeRenderer triggers item.materializeImagePath", async () => {
+  const invokeID = "inv-1";
   const { frames } = await run(async (stdin, liveFrames) => {
-    stdin.write(JSON.stringify({ kind: "invoke" }) + "\n");
-    const verbReq = await waitForFrame(liveFrames, (f) => f.kind === "verbRequest");
-    stdin.write(JSON.stringify({ kind: "verbResponse", id: verbReq.id, ok: true, payload: "/tmp/materialized.png" }) + "\n");
+    stdin.write(JSON.stringify({ id: invokeID, method: "runtime.invokeRenderer", request: { requestID: "r1" } }) + "\n");
+    const hostCall = await waitForFrame(liveFrames, (f) => f.method === "item.materializeImagePath");
+    stdin.write(JSON.stringify({ id: hostCall.id, response: "/tmp/materialized.png" }) + "\n");
     stdin.end();
   });
 
-  const verbReq = frames.find((f) => f.kind === "verbRequest");
-  assert.ok(verbReq, "bridge must emit a verbRequest frame");
-  assert.equal(verbReq.verb, "item.materializeImagePath", "verb must be item.materializeImagePath");
-  assert.ok(typeof verbReq.id === "string" && verbReq.id.length > 0, "verbRequest must have an id");
-  assert.deepEqual(verbReq.args, {}, "materializeImagePath args must be empty");
+  const hostCall = frames.find((f) => f.method === "item.materializeImagePath");
+  assert.ok(hostCall, "bridge must emit an item.materializeImagePath frame");
+  assert.ok(typeof hostCall.id === "string" && hostCall.id.length > 0, "host call must have an id");
+  assert.deepEqual(hostCall.request, {}, "materializeImagePath request must be empty object");
 });
 
-test("verbResponse with ok:true resolves to the payload and complete frame carries result", async () => {
+test("host-call response resolves to the payload and runtime.invokeRenderer response carries result", async () => {
+  const invokeID = "inv-2";
   const expectedPath = "/tmp/test-image-123.png";
 
   const { frames } = await run(async (stdin, liveFrames) => {
-    stdin.write(JSON.stringify({ kind: "invoke" }) + "\n");
-    const verbReq = await waitForFrame(liveFrames, (f) => f.kind === "verbRequest");
-    stdin.write(JSON.stringify({ kind: "verbResponse", id: verbReq.id, ok: true, payload: expectedPath }) + "\n");
+    stdin.write(JSON.stringify({ id: invokeID, method: "runtime.invokeRenderer", request: { requestID: "r2" } }) + "\n");
+    const hostCall = await waitForFrame(liveFrames, (f) => f.method === "item.materializeImagePath");
+    stdin.write(JSON.stringify({ id: hostCall.id, response: expectedPath }) + "\n");
     stdin.end();
   });
 
-  const complete = frames.find((f) => f.kind === "complete");
-  assert.ok(complete, "bridge must emit a complete frame after verbResponse");
-  assert.equal(complete.errorMessage, null, "complete frame must have no errorMessage");
-  assert.equal(complete.result?.path, expectedPath, "complete frame result must contain the path from verbResponse");
+  const invokeResponse = frames.find((f) => f.id === invokeID && f.response !== undefined);
+  assert.ok(invokeResponse, "bridge must emit a response frame for the runtime.invokeRenderer");
+  assert.equal(invokeResponse.response.errorMessage, null, "response must have no errorMessage");
+  assert.equal(invokeResponse.response.result?.path, expectedPath, "result must contain the path from the host-call response");
 });
 
-test("verbResponse with ok:false causes complete frame to carry errorMessage", async () => {
+test("host-call error response causes runtime.invokeRenderer response to carry errorMessage", async () => {
+  const invokeID = "inv-3";
+
   const { frames } = await run(async (stdin, liveFrames) => {
-    stdin.write(JSON.stringify({ kind: "invoke" }) + "\n");
-    await waitForFrame(liveFrames, (f) => f.kind === "verbRequest");
-    stdin.write(JSON.stringify({ kind: "verbResponse", id: "vrb-1", ok: false, error: "item is not an image" }) + "\n");
+    stdin.write(JSON.stringify({ id: invokeID, method: "runtime.invokeRenderer", request: { requestID: "r3" } }) + "\n");
+    const hostCall = await waitForFrame(liveFrames, (f) => f.method === "item.materializeImagePath");
+    stdin.write(JSON.stringify({ id: hostCall.id, error: "item is not an image" }) + "\n");
     stdin.end();
   });
 
-  const complete = frames.find((f) => f.kind === "complete");
-  assert.ok(complete, "bridge must emit a complete frame");
+  const invokeResponse = frames.find((f) => f.id === invokeID && f.response !== undefined);
+  assert.ok(invokeResponse, "bridge must emit a response frame");
   assert.ok(
-    complete.errorMessage?.includes("item is not an image"),
-    `complete.errorMessage must propagate verb error, got: ${complete.errorMessage}`
+    invokeResponse.response.errorMessage?.includes("item is not an image"),
+    `response.errorMessage must propagate host-call error, got: ${invokeResponse.response.errorMessage}`
   );
 });
 
-test("verbResponse with unrecognised id is silently ignored — bridge does not crash", async () => {
+test("response with unrecognised id is silently ignored — bridge does not crash", async () => {
+  const invokeID = "inv-4";
   const { frames } = await run(async (stdin, liveFrames) => {
-    stdin.write(JSON.stringify({ kind: "invoke" }) + "\n");
-    const verbReq = await waitForFrame(liveFrames, (f) => f.kind === "verbRequest");
+    stdin.write(JSON.stringify({ id: invokeID, method: "runtime.invokeRenderer", request: { requestID: "r4" } }) + "\n");
+    const hostCall = await waitForFrame(liveFrames, (f) => f.method === "item.materializeImagePath");
     // Send unknown id first — must be silently dropped.
-    stdin.write(JSON.stringify({ kind: "verbResponse", id: "unknown-id", ok: true, payload: "/tmp/wrong.png" }) + "\n");
+    stdin.write(JSON.stringify({ id: "unknown-id", response: "/tmp/wrong.png" }) + "\n");
     // Then send the correct id to resolve the pending promise.
-    stdin.write(JSON.stringify({ kind: "verbResponse", id: verbReq.id, ok: true, payload: "/tmp/real.png" }) + "\n");
+    stdin.write(JSON.stringify({ id: hostCall.id, response: "/tmp/real.png" }) + "\n");
     stdin.end();
   });
 
-  const complete = frames.find((f) => f.kind === "complete");
-  assert.ok(complete, "bridge must still emit a complete frame");
-  assert.equal(complete.result?.path, "/tmp/real.png", "result must use the correct verbResponse payload");
+  const invokeResponse = frames.find((f) => f.id === invokeID && f.response !== undefined);
+  assert.ok(invokeResponse, "bridge must still emit a response frame");
+  assert.equal(invokeResponse.response.result?.path, "/tmp/real.png", "result must use the correct response payload");
 });
 
-test("unhandled rejection causes bridge to exit with non-zero code and no complete frame", async () => {
-  // Uses a separate fixture that triggers an unhandled rejection on invoke.
+test("unhandled rejection causes bridge to exit with non-zero code and no response frame", async () => {
+  const invokeID = "inv-exit";
   const { frames, exitCode, stderr } = await runDuplex(
     exitBridgePath,
     async (stdin) => {
-      stdin.write(JSON.stringify({ kind: "invoke" }) + "\n");
+      stdin.write(JSON.stringify({ id: invokeID, method: "runtime.invokeRenderer", request: { requestID: "r-exit" } }) + "\n");
       stdin.end();
     }
   );
 
-  const complete = frames.find((f) => f.kind === "complete");
-  assert.ok(!complete, "bridge must NOT emit a complete frame on unhandled rejection");
+  const invokeResponse = frames.find((f) => f.id === invokeID && f.response !== undefined);
+  assert.ok(!invokeResponse, "bridge must NOT emit a response frame on unhandled rejection");
   assert.notEqual(exitCode, 0, "bridge must exit with non-zero code on unhandled rejection");
   assert.ok(stderr.includes("Unhandled rejection"), `stderr must mention the rejection, got: ${stderr}`);
 });

@@ -13,7 +13,7 @@ rl.on("line", (line) => {
   if (!line) return;
   try {
     const frame = JSON.parse(line);
-    if (frame.kind === "invoke") {
+    if (frame.method === "runtime.invokeRenderer") {
       // Fire-and-forget rejected promise — not awaited, so it becomes an unhandledRejection.
       Promise.reject(new Error("simulated unhandled rejection"));
     }

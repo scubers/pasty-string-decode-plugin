@@ -9,6 +9,7 @@ const sdkRoot = path.resolve(__dirname, '..');
 
 mkdirSync(path.join(sdkRoot, 'dist/runtime'), { recursive: true });
 mkdirSync(path.join(sdkRoot, 'dist/ui'), { recursive: true });
+mkdirSync(path.join(sdkRoot, 'dist/dom'), { recursive: true });
 
 // Build runtime CJS
 await build({
@@ -44,6 +45,26 @@ await build({
 await build({
   entryPoints: [path.join(sdkRoot, 'src/ui/index.ts')],
   outfile: path.join(sdkRoot, 'dist/ui/index.cjs'),
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2022',
+});
+
+// Build DOM ESM
+await build({
+  entryPoints: [path.join(sdkRoot, 'src/dom/index.ts')],
+  outfile: path.join(sdkRoot, 'dist/dom/index.js'),
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2022',
+});
+
+// Build DOM CJS (for tests)
+await build({
+  entryPoints: [path.join(sdkRoot, 'src/dom/index.ts')],
+  outfile: path.join(sdkRoot, 'dist/dom/index.cjs'),
   bundle: true,
   format: 'cjs',
   platform: 'browser',

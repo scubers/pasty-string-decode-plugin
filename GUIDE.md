@@ -1,5 +1,17 @@
 # 插件开发指南
 
+本文档与本工程（`plugins/template-plugin/`）一起，构成 Pasty 三方插件开发的**完整**参考。读完本文档并对照 demo 即可独立开发出一个生产可用的 Pasty 插件。
+
+**配套文档：**
+
+- **[`sdk/API.md`](./sdk/API.md)** — 由 `protocol/plugin/src/catalog.ts` 自动生成的 API 真相源（capability / host event / 类型一览）。运行 `cd protocol/plugin && npm run codegen` 会同步刷新这份文件。**有冲突时以 API.md 为准**。
+- **[`sdk/README.md`](./sdk/README.md)** — SDK 公共符号速查（导出、运行时入口、UI 入口）。
+- **[`sdk/SPECIFICATION.md`](./sdk/SPECIFICATION.md)** — SDK 形状规则、命名约定、扩展 capability 的 PR 流程。
+
+本 GUIDE 偏向**实践**：怎么起步、怎么实现 detector/renderer/action、怎么写权限和入参、常见坑点。
+
+---
+
 ## 0. 快速开始
 
 ### 前置条件
@@ -12,7 +24,9 @@
 npm install
 ```
 
-`sdk/` 是内嵌的 `@pasty/plugin-sdk`，`npm install` 会自动触发 `sdk/prepare`，在本地编译 `sdk/dist/`。完成后不需要任何额外步骤即可使用 SDK。
+`sdk/` 是内嵌的 `@pasty/plugin-sdk`，`npm install` 会自动触发 `sdk/prepare`，在本地编译 `sdk/dist/`。完成后即可直接使用 SDK。
+
+> `sdk/src/` 是宿主 SDK 的随包副本，**插件作者不需要查看或修改**。所有插件作者可用的符号由 codegen 产出，列在 [`sdk/API.md`](./sdk/API.md) 与 [`sdk/README.md`](./sdk/README.md)。
 
 ### 本地开发
 
@@ -20,19 +34,35 @@ npm install
 npm run dev
 ```
 
-启动 Vite 开发服务器并打开预览工作台（Preview Workbench）。工作台提供两个视图：
+启动 Vite 预览工作台（Preview Workbench）。工作台模拟宿主推送 bootstrap，提供两个视图：
 
-- `?view=renderer` — 模拟宿主推送 attachment bootstrap，预览 attachment renderer 卡片
-- `?view=action` — 模拟宿主推送 action session，预览 draft action 表单
+- `?view=renderer` — 预览 attachment renderer 卡片
+- `?view=action` — 预览 draft action 表单
 
-修改 `src/ui/` 下的 Vue/JS 文件，浏览器热更新。
+修改 `src/features/*/app.vue` 后浏览器热更新。
 
-也可以单独指定视图：
+也可以直接打开单一视图：
 
 ```sh
-npm run dev:renderer   # 直接打开 renderer 视图
-npm run dev:action     # 直接打开 action 视图
+npm run dev:renderer
+npm run dev:action
 ```
+
+### 在 Pasty 中调试
+
+Pasty → Settings → Plugins → Developer Plugins 区段提供开发插件生命周期管理：
+
+1. **Add Path** — 选择含 `manifest.json` 的目录（即 `sourceRootPath`）。
+2. 若 `manifest.json` 声明了 `install` 字段，Pasty **自动执行安装脚本**，工作目录为 `sourceRootPath`。`node_modules/` 等产物落到工程目录（等价于你手动 `npm install`）。
+3. 安装日志写入 `<AppData>/development-plugins/<pluginID>/install-logs/`，不会污染你的 git status。
+
+| 按钮 | 行为 |
+|---|---|
+| **重新加载** | 重读 `manifest.json`，刷新 fingerprint / permissions / loadState。**不**重跑 install。 |
+| **执行安装** | 就地重跑 install hook，更新 `lastInstallExecution`。**不**重读 manifest。 |
+| **查看日志** | `installFailed` 状态下显示，打开最近一次安装日志（支持实时 tail）。 |
+
+状态：`installing` → 安装中；`installFailed` → 退出码非 0 或 runtime 不可达；`ready` → 可用。
 
 ### 生产构建
 
@@ -40,201 +70,214 @@ npm run dev:action     # 直接打开 action 视图
 npm run build
 ```
 
-依次执行：clean → build:sdk → build:runtime → build:ui → verify:build，输出到 `dist/`。
+依次：clean → build:sdk → build:runtime → build:ui → verify:build，输出到 `dist/`。
 
 ### 测试
 
 ```sh
-npm test
+npm test         # tests/runtime/ 集成测试
+cd sdk && npm test   # SDK 自身测试
 ```
-
-运行 `tests/` 下所有集成测试（Node test runner，无需安装额外测试框架）。SDK 自身测试：
-
-```sh
-cd sdk && npm test
-```
-
-### 开发起点
-
-| 要开发的产物 | 从哪里开始 |
-|---|---|
-| Detector | `src/runtime/detectors/` |
-| Attachment renderer（runtime 侧） | `src/runtime/renderers/` |
-| Attachment renderer（UI 侧） | `src/ui/renderers/` |
-| Action（runtime 侧） | `src/runtime/actions/` |
-| Action（UI 侧） | `src/ui/actions/` |
-| 插件声明 | `manifest.json` |
 
 ---
 
-## 1. 架构
+## 1. 工程结构
 
-### 执行上下文
-
-一个 v2 插件在两个完全隔离的执行环境中运行：
-
-**Node runtime** — 插件 `manifest.json` 声明的 `runtime.nodeEntry` 入口，在宿主管理的 Node.js 子进程中加载。负责所有业务逻辑：detector、attachment renderer、action 的核心计算；可通过 `ctx.host.*` 调用宿主 API。
-
-**WebView UI** — 插件 `manifest.json` 声明的 `uiEntry` HTML 页面，在宿主 WebView 中运行。负责 attachment renderer 卡片和 draft action 表单的渲染与交互；通过 `@pasty/plugin-sdk/ui` 的 `pasty.*` 对象与宿主通信。
-
-两个上下文互不共享内存，通过宿主协议通信。
-
-### 三类产物
-
-| 产物 | 运行位置 | 核心方法 |
-|---|---|---|
-| **detector** | Node runtime | `detect(input, ctx)` — 把 item 内容转换成 artifact |
-| **attachment renderer** | Node runtime + WebView UI | `resolveAttachment(input, ctx)` + `invokeOperation(input, ctx)` |
-| **action** | Node runtime + WebView UI（draft lifecycle）| `resolveSession(input, ctx)` + `invokeOperation(input, ctx)` |
-
-### 数据流
-
-```
-                     ┌─────────────────────────────┐
-                     │          Pasty Host          │
-                     └──────────┬──────────┬────────┘
-                                │          │
-              ┌─────────────────▼──┐   ┌───▼──────────────────┐
-              │   Node Runtime     │   │    WebView UI         │
-              │                    │   │                       │
-              │  definePlugin()    │   │  import { pasty }     │
-              │    setup(init)     │   │    from '@pasty/       │
-              │      ↓             │   │     plugin-sdk/ui'    │
-              │  ctx.host.*        │   │                       │
-              │  (clipboard/nav/   │   │  await pasty.ready()  │
-              │   item/settings)   │   │  pasty.item.current() │
-              │                    │   │  pasty.action.*       │
-              └────────────────────┘   └───────────────────────┘
-```
-
-**Host → Plugin 推送：**
-- 宿主向 Node runtime 发送 handler 调用（detect / resolveAttachment / invokeOperation 等）
-- 宿主向 WebView 推送 bootstrap 数据（item、attachment、action session）
-- 宿主向 WebView 推送状态更新（attachment updated、theme updated、search updated）
-
-**Plugin → Host 请求：**
-- Node runtime 通过 `ctx.host.*` 同步调用宿主 API
-- WebView 通过 `pasty.*` Verb 调用宿主 API（setHeight、setTags、invoke 等）
-
-### 工程目录结构
+新插件按 feature 切分，每个 feature 一个自洽目录。推荐布局：
 
 ```text
-my-plugin/
+your-plugin/
 ├── manifest.json
 ├── package.json
-├── sdk/                        ← 内嵌 @pasty/plugin-sdk（随模板一起交付）
-│   ├── package.json
-│   ├── src/
-│   └── dist/                   ← 编译产物，npm install 自动生成（gitignore）
-├── scripts/
-│   ├── build-runtime.mjs
-│   └── build-ui.mjs
+├── sdk/                                ← 内嵌 @pasty/plugin-sdk（file:./sdk）
+├── scripts/                            ← build:runtime / build:ui / verify:build
 ├── src/
-│   ├── runtime/
-│   │   ├── index.js            ← definePlugin 入口
-│   │   ├── detectors/
-│   │   ├── renderers/
-│   │   └── actions/
-│   └── ui/
-│       ├── renderers/
-│       └── actions/
-└── dist/                       ← 编译产物，npm run build 生成（gitignore）
-    ├── runtime/
-    │   └── index.cjs
-    └── ui/
+│   ├── features/<feature-name>/        ← 每个能力一个文件夹
+│   │   ├── payload.ts                  ← 数据类型 / draft 类型
+│   │   ├── detector.ts                 ← detector（若有）
+│   │   ├── renderer.ts                 ← renderer runtime 端（若有）
+│   │   ├── action.ts                   ← action runtime 端（若有）
+│   │   ├── app.vue                     ← UI 入口（renderer 或 draft action）
+│   │   ├── main.ts / index.html        ← Vite 入口
+│   ├── shared/                         ← 跨 feature 的薄工具层
+│   ├── preview/                        ← 本地预览工作台（dev-only）
+│   └── plugin.ts                       ← definePlugin 入口；注册所有 handler
+└── tests/runtime/
 ```
+
+template-plugin 自带的具体 feature 列表（`preview-renderer/` / `expanded-renderer/` / `auto-action/` / `capability-gallery/`）见 [README.md](./README.md) "演示的能力"。
+
+> `sdk/` 是 codegen 同步的内嵌副本，**不要手动改**。扩展 capability 见 [`sdk/SPECIFICATION.md`](./sdk/SPECIFICATION.md) Ch 3。
 
 ---
 
-## 2. manifest.json 规范
+## 2. 架构
 
-### 2.1 顶层字段
+### 2.1 两个执行上下文
+
+一个 v2 插件运行在两个完全隔离的环境：
+
+| 环境 | 入口 | 负责 |
+|---|---|---|
+| **Node runtime** | `manifest.runtime.nodeEntry` | detector、`resolveAttachment`、`resolveSession`、`runAutoAction`、`messageHandlers` |
+| **WebView UI** | `manifest.<thing>.uiEntry` HTML | 卡片/表单渲染、用户交互、最终结果提交 |
+
+两边通过 SDK 暴露的高阶 API 通信：
+
+- Runtime 侧用 `host.*`（来自 `@pasty/plugin-sdk/runtime`）调宿主能力
+- UI 侧用 `pasty.*`（来自 `@pasty/plugin-sdk/ui`）调宿主能力
+- UI ↔ Runtime 之间用 `pasty.runtime.invoke` ↔ `messageHandlers` 桥接
+
+宿主与插件之间的传输层（postMessage / Node IPC / 宿主事件 envelope）由 SDK 完全封装，**插件作者不需要关心**底层 wire 形状。
+
+### 2.2 三类产物
+
+| 产物 | 在哪运行 | runtime 入口 | UI 入口 |
+|---|---|---|---|
+| **detector** | 仅 Node runtime | `detect(input, ctx)` | — |
+| **attachment renderer** | Node runtime + WebView | `resolveAttachment(input, ctx)` | `manifest.attachmentRenderers[].uiEntry` |
+| **action（auto-run）** | 仅 Node runtime | `runAutoAction(input, ctx)` | — |
+| **action（draft）** | Node runtime + WebView | `resolveSession(input, ctx)`（可选） | `manifest.actions[].uiEntry` |
+
+> 历史上的 `invokeOperation` 入口已被**完全移除**。`definePlugin` 在 setup 阶段就会拦截带 `invokeOperation` 的 handler 并抛错。所有按钮副作用与 draft 提交都通过 UI verb 完成。
+
+### 2.3 数据流总图
+
+```
+┌─────────────────────────────────────┐
+│           Pasty Host                │
+└───────────┬─────────────┬───────────┘
+            │             │
+   ┌────────▼─────────┐  ┌▼─────────────────────────┐
+   │  Node Runtime    │  │     WebView UI            │
+   │                  │  │                           │
+   │  definePlugin()  │  │  import { pasty }         │
+   │   detect         │  │    from '@pasty/plugin-   │
+   │   resolveAttach… │  │           sdk/ui'         │
+   │   resolveSession │  │                           │
+   │   runAutoAction  │  │  pasty.item.current()     │
+   │   messageHandlers│  │  pasty.action.*           │
+   │                  │  │  pasty.attachmentRenderer.│
+   │  host.item.*     │  │  pasty.runtime.invoke()   │
+   │  host.clipboard. │  │  …                        │
+   │  host.action.*   │  │                           │
+   │  …               │  │                           │
+   └────────▲─────────┘  └───────────────────────────┘
+            │                          │
+            └──────────────────────────┘
+              pasty.runtime.invoke
+              ↔ messageHandlers
+```
+
+**Host → Plugin（推送）：**
+- 宿主调 Node runtime 的 handler：`detect` / `resolveAttachment` / `resolveSession` / `runAutoAction`
+- 宿主向 WebView 推送 topic 状态：UI 用 `pasty.<domain>.on(fn)` 订阅
+- 宿主派发按钮点击：UI 用 `pasty.action.onHostInvoke(fn)` / `pasty.attachmentRenderer.onHostInvoke(fn)` 订阅
+
+**Plugin → Host（请求）：**
+- Runtime 用 `host.*` 调宿主（Node IPC，真 RPC，返回 `Promise<Result>`）
+- UI 用 `pasty.*` verb 调宿主（WebView postMessage，同样是 `Promise<Result>`）
+
+### 2.4 Host → WebView 状态形状
+
+UI 侧拿到的所有宿主状态遵守三种形状之一（详见 [`sdk/SPECIFICATION.md`](./sdk/SPECIFICATION.md) 第 1 章）：
+
+| 形状 | 接口 | 适用 | 举例 |
+|---|---|---|---|
+| **Topic\<T\>** | `.current(): T \| undefined` + `.on(fn)` | 有快照的持续状态 | `pasty.item`、`pasty.theme` |
+| **OptionalTopic\<T\>** | 同上，但 `.current()` 可能 `undefined` | 上下文相关的状态 | `pasty.item.attachment`、`pasty.action.draft` |
+| **Stream\<T\>** | `.on(fn)` only | 离散事件流 | `pasty.attachmentRenderer.onHostInvoke`、`pasty.action.onHostInvoke` |
+
+> **重要：SDK 没有 `pasty.ready()`**。监听器可以在模块加载时立即注册——宿主会在 bootstrap 推送时唤起它们。`.current()` 在 bootstrap 之前可能返回 `undefined`，用 `?.` / `??` / 早返回防御即可。
+
+---
+
+## 3. manifest.json 规范
+
+### 3.1 顶层字段
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `schemaVersion` | `number` | 是 | 固定为 `2` |
+| `schemaVersion` | `number` | 是 | 固定 `2` |
 | `plugin` | `object` | 是 | 插件身份信息 |
 | `install` | `object` | 否 | 安装期 hook 配置 |
 | `runtime` | `object` | 是 | runtime 与 UI 根目录 |
-| `permissions` | `string[]` | 否 | mutation 权限声明（缺省为空数组） |
+| `permissions` | `string[]` | 否 | mutation 权限声明（缺省 `[]`） |
 | `attachmentRenderers` | `object[]` | 否 | attachment renderer 列表 |
 | `detectors` | `object[]` | 否 | detector 列表 |
 | `actions` | `object[]` | 否 | action 列表 |
 
-### 2.2 `plugin`
+### 3.2 `plugin`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `plugin.id` | `string` | 是 | 插件稳定命名空间，建议反向域名风格（如 `plugin.example.demo`） |
-| `plugin.title` | `string` | 是 | 插件显示名称 |
-| `plugin.version` | `string` | 是 | 插件版本号，宿主按字符串处理 |
+| `plugin.id` | `string` | 是 | 稳定命名空间，建议反向域名（`plugin.example.demo`） |
+| `plugin.title` | `string` | 是 | 显示名称 |
+| `plugin.version` | `string` | 是 | 版本号；宿主按字符串处理 |
 
-### 2.3 `install`（可选）
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `install.runtime` | `string` | 是 | 安装脚本运行时：`node`、`bash` |
-| `install.entry` | `string` | 是 | 安装脚本路径，相对插件根目录，不允许跳出根目录 |
-
-### 2.4 `runtime`
+### 3.3 `install`（可选）
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `runtime.nodeEntry` | `string` | 是 | Node runtime 入口，相对插件根目录 |
-| `runtime.uiRoot` | `string` | 是 | UI 根目录，所有 `uiEntry` 相对此目录解析 |
+| `install.runtime` | `'node' \| 'bash'` | 是 | 安装脚本运行时 |
+| `install.entry` | `string` | 是 | 脚本路径，相对插件根目录，不允许逃出 |
 
-### 2.5 `permissions`
+参见本工程 `scripts/install.mjs`。
 
-| 权限值 | 门控的 SDK 方法 |
-|---|---|
-| `setTags` | `ctx.host.item.setTags` / `addTags` / `removeTags`（runtime）；`pasty.item.setTags` / `addTags` / `removeTags`（UI） |
-| `setPinned` | `ctx.host.item.setPinned`（runtime）；`pasty.item.setPinned`（UI） |
-| `setAttachment` | `ctx.host.item.setAttachments`（runtime）；`pasty.item.setAttachments`（UI） |
-| `setSearchExtension` | `ctx.host.item.setSearchExtension`（runtime）；`pasty.item.setSearchExtension`（UI） |
-
-未声明的权限对应方法在运行时会受控失败，不能依赖其行为。
-
-### 2.6 `attachmentRenderers[]`
+### 3.4 `runtime`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `id` | `string` | 是 | renderer 局部 ID，同插件内唯一 |
+| `runtime.nodeEntry` | `string` | 是 | Node runtime 入口（编译后 `.cjs`） |
+| `runtime.uiRoot` | `string` | 是 | UI 根目录；所有 `uiEntry` 相对此目录 |
+
+### 3.5 `permissions`
+
+仅 4 个合法值：`setTags`、`setPinned`、`setAttachment`、`setSearchExtension`。声明哪个就解锁哪组 runtime mutation verb；其余 verb（clipboard、navigation、settings 读、console、attachment 读取、图片临时路径等）默认就能调。
+
+完整的权限-到-verb 映射、声明示例与最小权限原则见 [§8 权限模型](#8-权限模型)。
+
+### 3.6 `attachmentRenderers[]`
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` | `string` | 是 | 局部 ID，同插件内唯一 |
 | `title` | `string` | 是 | 显示名称 |
-| `attachmentType` | `string` | 是 | 该 renderer 负责的 attachment type，建议以 `plugin.id + "."` 为前缀 |
-| `height` | `number \| "auto" \| object` | 否 | 卡片高度策略，见下方三种形态 |
-| `uiEntry` | `string` | 否 | 本地 HTML 页面路径，相对 `runtime.uiRoot` |
+| `attachmentType` | `string` | 是 | 该 renderer 负责的 attachment type，建议 `plugin.id + "."` 前缀 |
+| `height` | `number \| "auto" \| { min, max }` | 否 | 卡片高度策略，见下 |
+| `uiEntry` | `string` | 否 | HTML 入口，相对 `runtime.uiRoot` |
 
 **height 三种形态：**
 
 ```json
-{ "height": 320 }            // 固定高度（1–800 px）
-{ "height": "auto" }         // 自适应，范围 [80, 800]
-{ "height": { "min": 120, "max": 480 } }  // 有界范围
+{ "height": 320 }                          // 固定高度（1–800 px）
+{ "height": "auto" }                       // 自适应，默认范围 [80, 800]
+{ "height": { "min": 120, "max": 480 } }   // 有界范围
 ```
 
-省略 `height` 等价于 `{ "min": 80, "max": 400 }`。`"auto"` 和 `{ min, max }` 形态下，**插件须在 UI 代码中显式调用 `pasty.window.autoFit()`**，SDK 不会自动启动。
+省略 `height` 等价于 `{ "min": 80, "max": 400 }`。`"auto"` 与 `{ min, max }` 下，**UI 必须显式调用 `pasty.window.autoFit()`**——SDK 不会自动启动。
 
-### 2.7 `detectors[]`
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `id` | `string` | 是 | detector 局部 ID，同插件内唯一 |
-| `title` | `string` | 是 | 显示名称 |
-| `supportedInputKinds` | `string[]` | 是 | 支持的输入类型：`text`、`image`、`path_reference`；不允许空数组 |
-| `attachmentTypes` | `string[]` | 是 | 可能产出的 attachment type 列表；每项须在 `attachmentRenderers[]` 中有对应 renderer |
-
-### 2.8 `actions[]`
+### 3.7 `detectors[]`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `id` | `string` | 是 | action 局部 ID，同插件内唯一 |
+| `id` | `string` | 是 | 局部 ID |
 | `title` | `string` | 是 | 显示名称 |
-| `supportedItemTypes` | `string[]` | 是 | 支持的 item type：`text`、`image`、`path_reference`；不允许空数组 |
-| `lifecycle` | `string` | 是 | `auto-run` 或 `draft` |
+| `supportedInputKinds` | `string[]` | 是 | `'text' \| 'image' \| 'path_reference'`；非空 |
+| `attachmentTypes` | `string[]` | 是 | 可能产出的 attachment type；每项须在 `attachmentRenderers[]` 中有对应 renderer |
+
+### 3.8 `actions[]`
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` | `string` | 是 | 局部 ID |
+| `title` | `string` | 是 | 显示名称 |
+| `supportedItemTypes` | `string[]` | 是 | `'text' \| 'image' \| 'path_reference'`；非空 |
+| `lifecycle` | `'auto-run' \| 'draft'` | 是 | action 生命周期 |
 | `keywords` | `string[]` | 否 | Action catalog 搜索关键词 |
-| `uiEntry` | `string` | 否 | draft action 的 HTML 入口，相对 `runtime.uiRoot` |
+| `uiEntry` | `string` | 否 | `lifecycle: 'draft'` 时必填 |
 
-### 2.9 最小完整示例
+### 3.9 最小完整示例
 
 ```json
 {
@@ -248,11 +291,11 @@ my-plugin/
     "nodeEntry": "dist/runtime/index.cjs",
     "uiRoot": "dist/ui"
   },
-  "permissions": ["setTags", "setPinned"],
+  "permissions": ["setTags"],
   "attachmentRenderers": [
     {
-      "id": "sample-renderer",
-      "title": "Sample Renderer",
+      "id": "sample-card",
+      "title": "Sample Card",
       "attachmentType": "plugin.example.sample.card",
       "height": 320,
       "uiEntry": "renderers/sample/index.html"
@@ -268,11 +311,11 @@ my-plugin/
   ],
   "actions": [
     {
-      "id": "sample-action",
-      "title": "Sample Action",
+      "id": "sample-apply",
+      "title": "Apply Sample",
       "supportedItemTypes": ["text"],
       "lifecycle": "draft",
-      "keywords": ["sample"],
+      "keywords": ["sample", "apply"],
       "uiEntry": "actions/sample/index.html"
     }
   ]
@@ -281,664 +324,714 @@ my-plugin/
 
 ---
 
-## 3. SDK Reference
+## 4. SDK 入口与初始化
 
-SDK 通过两个 subpath 入口提供：
+SDK 暴露两个 subpath。一边导出的符号**完全由 codegen 生成**，列在 [`sdk/API.md`](./sdk/API.md)。
 
-```js
-// Node runtime 侧（CJS）
-const { definePlugin, actionResult, rendererResult } = require('@pasty/plugin-sdk/runtime');
+### 4.1 Runtime 入口
 
-// WebView UI 侧（ESM）
-import { pasty } from '@pasty/plugin-sdk/ui';
+```ts
+// CommonJS（推荐与现行 bundler 配合）
+const { definePlugin, host, actionResult, defineMessage } = require('@pasty/plugin-sdk/runtime');
+
+// ESM（types）
+import type { PluginAttachmentRendererHandler, PluginAutoRunActionHandler, PluginDetectorHandler } from '@pasty/plugin-sdk/runtime';
 ```
 
-详细方法清单见 [`sdk/README.md`](./sdk/README.md)。SDK 扩展规范与命名规则见 [`sdk/SPECIFICATION.md`](./sdk/SPECIFICATION.md)。
+入口导出：
 
-### 3.1 `@pasty/plugin-sdk/runtime`
+- `definePlugin` —— 注册 handler；本地校验 registry 形状
+- `host` —— 直接调宿主能力的单例（`host.<domain>.<verb>(payload)`）。**推荐写法**是从 handler 收到的 `ctx.host` 调用（同一个对象，但写在 handler 内更显式）。
+- `actionResult` —— `runAutoAction` 的返回值构造器
+- `defineMessage` —— UI ↔ Runtime RPC 的类型契约
 
-#### `definePlugin(definition)`
+### 4.2 UI 入口
 
-验证并返回插件定义对象。`definition.setup` 不是函数时抛错。
+```ts
+import { pasty } from '@pasty/plugin-sdk/ui';
+import { defineMessage } from '@pasty/plugin-sdk/ui';
+import { PluginContextError } from '@pasty/plugin-sdk/ui';
+```
 
-```js
+`pasty` 的命名空间一览：
+
+| Namespace | 形态 | 说明 |
+|---|---|---|
+| `pasty.item` | Topic | `current()`, `on()`, `readAttachment()`，子 OptionalTopic `pasty.item.attachment` |
+| `pasty.theme` | Topic | `current()`, `on()` |
+| `pasty.pluginContext` | Topic | `current()`, `on()`，返回 `{mode, pluginID}` |
+| `pasty.action` | Verb + OptionalTopic | action 上下文专属；`setButtons`、`complete`、`draft`、`onHostInvoke` |
+| `pasty.attachmentRenderer` | Verb + Stream | attachment 上下文专属；`setButtons`、`onHostInvoke` |
+| `pasty.window` | Verb | `setHeight`, `autoFit` |
+| `pasty.clipboard` | Verb | `copyText` |
+| `pasty.navigation` | Verb | `openUrl`, `revealInFinder`, `openFilePath` |
+| `pasty.settings` | Verb | `get`, `getAll` |
+| `pasty.console` | Verb | `log({level, message})` |
+| `pasty.textInput` | Verb | `stateChanged({isFocused, isComposing})` |
+| `pasty.runtime` | Verb | `invoke<TResp>({key, payload, timeoutMs?})` |
+
+**每个方法的精确 payload / response 形状以 [`sdk/API.md`](./sdk/API.md) 为准。** GUIDE 不再重复 23 个 capability 的完整签名表——那是 codegen 的责任。
+
+### 4.3 没有 `pasty.ready()`
+
+SDK **不**导出 `pasty.ready()`。订阅者（`pasty.<domain>.on(fn)`）可在模块加载时立即注册——监听是 context-neutral 的，宿主推送 bootstrap 时会自动触发回调。
+
+如果需要在初始数据到达后做同步动作，常见模式是：
+
+```ts
+import { pasty } from '@pasty/plugin-sdk/ui';
+
+const item = pasty.item.current(); // bootstrap 已到时直接拿到
+if (item) {
+  init(item);
+} else {
+  const unsub = pasty.item.on(initialItem => {
+    init(initialItem);
+    unsub();
+  });
+}
+```
+
+### 4.4 Context guards
+
+部分 verb 只在特定 WebView 上下文有意义，在错误上下文调用会以 `PluginContextError` reject：
+
+| Verb | 必须的上下文 |
+|---|---|
+| `pasty.action.complete(...)` | action |
+| `pasty.action.setButtons(...)` | action |
+| `pasty.attachmentRenderer.setButtons(...)` | attachmentRenderer |
+
+捕获方式：
+
+```ts
+import { PluginContextError } from '@pasty/plugin-sdk/ui';
+
+try {
+  await pasty.action.complete({ result: { resultKind: 'none' } });
+} catch (e) {
+  if ((e as Error).name === 'PluginContextError') {
+    // 当前 WebView 不是 action 上下文
+  }
+}
+```
+
+订阅类 verb（`pasty.action.draft.on`、`pasty.attachmentRenderer.onHostInvoke.on` 等）是 context-neutral 的：在错误上下文订阅不会抛错，监听器只是永远不会被触发。
+
+### 4.5 `definePlugin`
+
+```ts
 const { definePlugin } = require('@pasty/plugin-sdk/runtime');
 
 module.exports = definePlugin({
-  setup(init) {
-    return {
-      detectors: { 'my-detector': createMyDetector() },
-      attachmentRenderers: { 'my-renderer': createMyRenderer() },
-      actions: { 'my-action': createMyAction() }
-    };
-  }
+  attachmentRenderers: {
+    'sample-card': createSampleRenderer(),
+  },
+  detectors: {
+    'sample-detector': createSampleDetector(),
+  },
+  actions: {
+    'sample-apply': createSampleAction(),
+  },
+  messageHandlers: {
+    'sample.applyMetadata': async (req, ctx) => {
+      await ctx.host.item.setTags({ tags: req.tags });
+      return { ok: true };
+    },
+  },
 });
 ```
 
-`setup(init)` 的 `init` 对象：
+注册项的 key **必须**与 `manifest.json` 中对应 `id` 完全一致，否则宿主无法寻址。
 
-| 字段 | 说明 |
-|---|---|
-| `init.plugin.id` | 当前插件 ID（来自 manifest） |
-| `init.plugin.title` | 当前插件标题 |
-| `init.plugin.version` | 当前插件版本 |
-| `init.manifest.permissions` | 权限声明列表 |
-| `init.host.platform` | 宿主平台（只读） |
-| `init.host.hostVersion` | 宿主版本号（只读） |
-| `init.host.devMode` | 是否开发模式（只读） |
+`definePlugin` 同时接受 setup 函数形式：
 
-`setup` 返回值的 registry key 须与 manifest 中对应 `id` 完全一致；key 不一致时宿主无法寻址该 capability。
-
-#### `actionResult`
-
-```js
-const { actionResult } = require('@pasty/plugin-sdk/runtime');
-
-actionResult.text('hello', { userMessage: 'Done' });
-// → { result: { resultKind: 'text', text: 'hello' }, userMessage: 'Done' }
-
-actionResult.none({ userMessage: 'Applied' });
-// → { result: { resultKind: 'none', text: null }, userMessage: 'Applied' }
-```
-
-`value` 参数被强制转换为字符串；`null`/`undefined` → `""`。`userMessage` 使用 `??` 语义：空字符串 `""` 保留，仅 `null`/`undefined` 归一化为 `null`。
-
-#### `rendererResult`
-
-```js
-const { rendererResult } = require('@pasty/plugin-sdk/runtime');
-
-rendererResult.success({ userMessage: 'Done' });
-// → { success: true, userMessage: 'Done' }
-
-rendererResult.failure('Something went wrong');
-// → { success: false, userMessage: 'Something went wrong' }
-```
-
-#### `ctx.host.*`（handler 调用时注入）
-
-| 命名空间 | 方法 | 说明 |
-|---|---|---|
-| `ctx.host.clipboard` | `copyText(text)` | 复制文本到系统剪贴板 |
-| `ctx.host.navigation` | `openUrl(url)` | 打开 URL |
-| | `revealInFinder(path)` | 在 Finder 中显示路径 |
-| | `openFilePath(path)` | 用默认应用打开文件路径 |
-| `ctx.host.item` | `setTags(tags)` → `string[]` | 替换 tags（需 `setTags` 权限） |
-| | `addTags(tags)` → `string[]` | 追加 tags（需 `setTags` 权限） |
-| | `removeTags(tags)` → `string[]` | 移除 tags（需 `setTags` 权限） |
-| | `setPinned(bool)` | Pin/unpin item（需 `setPinned` 权限） |
-| | `setAttachments(payload)` | 替换 attachment group（需 `setAttachment` 权限） |
-| | `setSearchExtension(payload)` | 替换搜索扩展（需 `setSearchExtension` 权限） |
-| `ctx.host.settings` | `get(key)` → `string \| null` | 读取单个插件设置（key 使用 `plugin.id + "."` 前缀） |
-| | `getAll()` → `Record<string, string>` | 读取所有插件设置 |
-| `ctx.host.capabilities` | （只读对象） | 当前已授权权限集合，见第 5 章 |
-
-### 3.2 `@pasty/plugin-sdk/ui`
-
-所有 UI 侧能力通过单一 `pasty` 对象访问。调用任何方法前先等待 `pasty.ready()`。
-
-#### `pasty.ready()` → `Promise<void>`
-
-在宿主完成 bootstrap 握手后 resolve。bootstrap globals 已存在时同步 resolve；否则等待宿主推送。
-
-```js
-import { pasty } from '@pasty/plugin-sdk/ui';
-
-async function init() {
-  await pasty.ready();
-  const item = pasty.item.current();
-}
-```
-
-#### API 形状说明
-
-| 形状 | 接口 | 适用场景 |
-|---|---|---|
-| **Topic\<T\>** | `.current(): T` + `.on(fn): Unsubscribe` | bootstrap 时一定有值的状态 |
-| **OptionalTopic\<T\>** | `.current(): T \| undefined` + `.on(fn): Unsubscribe` | 仅在特定上下文有值的状态 |
-| **Stream\<T\>** | `.on(fn): Unsubscribe` | 离散事件流 |
-| **Verb\<Args, Result\>** | `(args) => Promise<Result>` | 命令式调用 |
-
-#### `pasty.item` — Topic\<ClipboardItem\>
-
-```js
-const item = pasty.item.current();             // 读取当前 item
-const unsub = pasty.item.on(newItem => { });   // 订阅变化
-```
-
-| 方法 | 形状 | 说明 |
-|---|---|---|
-| `pasty.item.current()` | Topic | 当前 item 快照 |
-| `pasty.item.on(fn)` | Topic | 订阅 item 变化 |
-| `pasty.item.setTags(tags)` | Verb | 替换 tags（需 `setTags` 权限） |
-| `pasty.item.addTags(tags)` | Verb | 追加 tags |
-| `pasty.item.removeTags(tags)` | Verb | 移除 tags |
-| `pasty.item.setPinned(bool)` | Verb | Pin/unpin item（需 `setPinned` 权限） |
-| `pasty.item.setAttachments(p)` | Verb | 替换 attachment group（需 `setAttachment` 权限） |
-| `pasty.item.setSearchExtension(p)` | Verb | 替换搜索扩展（需 `setSearchExtension` 权限） |
-
-#### `pasty.item.attachment` — OptionalTopic\<AttachmentPayload\>（attachment renderer 上下文）
-
-```js
-const payload = pasty.item.attachment.current();    // 读取当前 attachment payload
-const unsub = pasty.item.attachment.on(p => { });   // 订阅 attachment 更新
-
-// 触发 renderer 按钮
-await pasty.item.attachment.invoke('copy-json', { format: 'pretty' });
-
-// 订阅宿主发起的 action 点击（按钮点击直接由宿主触发的场景）
-const unsub2 = pasty.item.attachment.onHostInvoke(({ actionID }) => { });
-```
-
-#### `pasty.item.search` — OptionalTopic\<string[]\>（attachment renderer 上下文）
-
-```js
-const terms = pasty.item.search.current();
-const unsub = pasty.item.search.on(terms => { });
-```
-
-#### `pasty.theme` — Topic\<PluginThemeTokenSnapshot\>
-
-```js
-const snapshot = pasty.theme.current();
-const unsub = pasty.theme.on(snapshot => {
-  document.documentElement.style.setProperty(
-    '--my-accent', snapshot['--pasty-accent']
-  );
+```ts
+module.exports = definePlugin({
+  setup() {
+    return { attachmentRenderers, detectors, actions, messageHandlers };
+  },
 });
-
-// 主动刷新（canvas 绘制等场景）
-const latest = await pasty.theme.refresh();
 ```
 
-宿主在 WebView 启动时自动注入 12 个 CSS token：
+校验规则（在 setup 阶段 throw）：
 
-| CSS Token | 语义 |
-|---|---|
-| `--pasty-surface` | 页面/卡片背景色 |
-| `--pasty-surface-elevated` | 浮层/弹出面板背景色 |
-| `--pasty-text-primary` | 主要正文文字 |
-| `--pasty-text-secondary` | 次要/辅助文字 |
-| `--pasty-text-tertiary` | 淡化/提示文字 |
-| `--pasty-accent` | 品牌/强调色 |
-| `--pasty-accent-contrast` | 叠于强调色上的文字颜色 |
-| `--pasty-border` | 边框/描边 |
-| `--pasty-divider` | 分隔线 |
-| `--pasty-success` | 成功/确认状态 |
-| `--pasty-warning` | 警告状态 |
-| `--pasty-danger` | 错误/破坏性操作状态 |
-
-宿主同时设置 `color-scheme: light dark`，无需 JS 即可跟随 light/dark 切换。`pasty.theme.on()` 订阅可在 CSS token 不够用时（如 canvas 绘制）获取 token 精确值。
-
-#### `pasty.action` — OptionalTopic\<ActionSession\>（action 上下文）
-
-```js
-const session = pasty.action.current();
-await pasty.action.invoke('compose');
-```
-
-| 方法 | 形状 | 说明 |
-|---|---|---|
-| `pasty.action.current()` | OptionalTopic | 当前 action session |
-| `pasty.action.on(fn)` | OptionalTopic | 订阅 session 变化 |
-| `pasty.action.invoke(buttonID, opts?)` | Verb | 提交 action |
-
-#### `pasty.action.draft` — OptionalTopic\<Draft\>（action 上下文）
-
-```js
-const draft = pasty.action.draft.current();
-await pasty.action.draft.update({ subject: 'Hello', note: '' });
-```
-
-`pasty.action.invoke` 和 `pasty.action.draft.update` 在 attachment renderer 上下文中调用会 reject 并抛出 `PluginContextError`。
-
-#### `pasty.window`
-
-```js
-pasty.window.setHeight(320);
-
-// 启动自适应高度（manifest height: { min, max } 或 "auto" 时必须显式调用）
-const dispose = await pasty.window.autoFit({ min: 120, max: 480 });
-// dispose() 停止监听
-```
-
-#### `pasty.clipboard`
-
-```js
-await pasty.clipboard.copyText('hello world');
-```
-
-#### `pasty.navigation`
-
-```js
-await pasty.navigation.openUrl('https://example.com');
-await pasty.navigation.revealInFinder('/path/to/file');
-await pasty.navigation.openFilePath('/path/to/file');
-```
-
-#### `pasty.settings`
-
-```js
-const label = await pasty.settings.get('plugin.my.label');
-const all = await pasty.settings.getAll();
-```
-
-### 3.3 共享能力对称表
-
-| 能力 | runtime 端 | UI 端 | 备注 |
-|---|---|---|---|
-| 复制文本 | `ctx.host.clipboard.copyText(text)` | `pasty.clipboard.copyText(text)` | |
-| 打开 URL | `ctx.host.navigation.openUrl(url)` | `pasty.navigation.openUrl(url)` | |
-| 显示于 Finder | `ctx.host.navigation.revealInFinder(p)` | `pasty.navigation.revealInFinder(p)` | |
-| 打开文件路径 | `ctx.host.navigation.openFilePath(p)` | `pasty.navigation.openFilePath(p)` | |
-| 替换 tags | `ctx.host.item.setTags(tags)` | `pasty.item.setTags(tags)` | 需 `setTags` 权限 |
-| 追加 tags | `ctx.host.item.addTags(tags)` | `pasty.item.addTags(tags)` | 需 `setTags` 权限 |
-| 移除 tags | `ctx.host.item.removeTags(tags)` | `pasty.item.removeTags(tags)` | 需 `setTags` 权限 |
-| Pin/unpin | `ctx.host.item.setPinned(bool)` | `pasty.item.setPinned(bool)` | 需 `setPinned` 权限 |
-| 替换 attachment | `ctx.host.item.setAttachments(p)` | `pasty.item.setAttachments(p)` | 需 `setAttachment` 权限 |
-| 替换搜索扩展 | `ctx.host.item.setSearchExtension(p)` | `pasty.item.setSearchExtension(p)` | 需 `setSearchExtension` 权限 |
-| 读取设置 | `ctx.host.settings.get(key)` | `pasty.settings.get(key)` | |
-| 读取所有设置 | `ctx.host.settings.getAll()` | `pasty.settings.getAll()` | |
-| **仅 runtime** | `definePlugin` / `actionResult` / `rendererResult` / `ctx.log.*` | — | Node 环境特有 |
-| **仅 UI** | — | Topic/OptionalTopic/Stream（`.current()` / `.on()`）；`pasty.window.*`；`pasty.ready()` | 浏览器环境特有 |
-
-### 3.4 共享数据类型契约
-
-#### `ClipboardItem`
-
-```ts
-interface ClipboardItem {
-  id: string;
-  type: string;           // 'text' | 'image' | 'path_reference'
-  text: string | null;
-  tags: string[];
-  sourceAppID: string;
-  createdAt?: string;
-  pinnedAt?: string | null;
-}
-```
-
-#### `AttachmentPayload`
-
-这是 WebView UI 侧 `pasty.item.attachment.current()` 返回的 attachment payload 形状（与 Node runtime `resolveAttachment` 的 `input.attachment` 字段不同）。
-
-```ts
-interface AttachmentPayload {
-  rendererID: string;
-  attachmentType: string;
-  attachmentKey: string;
-  payloadJson: string;   // JSON 对象字符串，插件自行解析
-  item: ClipboardItem;
-  buttons: Array<{ id: string; title: string; systemImage?: string; tintHex?: string }>;
-}
-```
-
-#### `ActionSession`
-
-```ts
-interface ActionDescriptor {
-  id: string;
-  actionID: string;
-  title: string;
-  lifecycle: 'auto-run' | 'draft';
-  supportedItemTypes: string[];
-  keywords: string[];
-  uiEntry: string | null;
-  buttons: ActionButton[];
-}
-
-interface ActionSession {
-  pluginID: string;
-  actionID: string;
-  displayName: string | null;
-  item: ClipboardItem;
-  action: ActionDescriptor | null;
-  draft: Draft;
-  buttons: ActionButton[];
-  defaultButtonID: string | null;
-}
-```
-
-#### `Draft`
-
-```ts
-type PluginJSONValue = string | number | boolean | null | PluginJSONValue[] | { [key: string]: PluginJSONValue };
-type Draft = Record<string, PluginJSONValue>;
-```
-
-#### `PluginThemeTokenSnapshot`
-
-```ts
-type PluginThemeTokenSnapshot = Record<string, string>;
-// keys: '--pasty-surface', '--pasty-accent', ... 等 12 个 CSS token
-```
+- renderer / action 注册项若包含 `invokeOperation` 立刻抛错（该入口已删除）
+- 其他 registry 形状由 TypeScript 在编译期约束
 
 ---
 
-## 4. Detector / Renderer / Action 开发约定
+## 5. Detector / Renderer / Action 开发约定
 
-### 4.1 Detector
+### 5.1 Detector
 
-**入参形状（`detect(input, ctx)`）：**
+入参 `PluginDetectorInput`（详见 [`sdk/API.md`](./sdk/API.md) §8）：
 
 ```ts
-input.item.id              // string
-input.item.type            // 'text' | 'image' | 'path_reference'
-input.item.text            // string | null
-input.item.tags            // string[]
-input.item.sourceAppID     // string
-
-input.content.kind         // 'text' | 'image' | 'path_reference'
-input.content.payload      // 随 kind 变化：
-                           //   text:           { text: string }
-                           //   image:          { dataBase64: string, width: number, height: number, format: string }
-                           //   path_reference: { entries: ClipboardPathReferenceEntry[] }
+input.item            // PluginClipboardItem: {id, type, tags, sourceAppID}
+input.content         // PluginContentEnvelope (见 §6)
+input.attachments     // PluginAttachmentRef[]：当前 item 已有的附件引用
 ```
 
-**返回值：**
+**返回值是 artifact 数组本身**（不是 `{artifacts}` 包装）：
 
 ```ts
-return {
-  artifacts: [
-    {
-      attachmentType: 'plugin.example.sample.card',  // 必须已在 manifest 声明
-      attachmentKey: 'card-1',                        // 稳定 key，不允许空字符串
-      payloadJson: '{"kind":"sample"}',               // JSON 对象字符串
-      attachmentSyncScope: 'syncable',                // 'syncable' | 'local_only'
-      searchProjection: {                             // 可选
-        scope: 'sample',     // 宿主会转小写，不允许包含 ':'
-        searchText: 'hello', // 不允许空字符串
-        label: null          // string | null
+import type { PluginDetectorHandler, PluginDetectorArtifact } from '@pasty/plugin-sdk/runtime';
+
+const detector: PluginDetectorHandler = {
+  async detect(input, ctx) {
+    if (input.content.kind !== 'text') return [];
+
+    return [
+      {
+        attachmentType: 'plugin.example.sample.card',  // 必须已在 manifest 声明
+        attachmentKey: `card-${input.item.id}`,        // 稳定 key，不允许空字符串
+        payloadJson: JSON.stringify({ text: input.content.text }),
+        attachmentSyncScope: 'syncable',               // 'syncable' | 'local_only'
+        searchProjection: {                            // 可选
+          scope: 'sample',
+          searchText: input.content.text.slice(0, 80),
+          label: null,
+        },
       },
-      createdAtMs: null,   // number | null
-      updatedAtMs: null    // number | null
-    }
-  ]
+    ] satisfies PluginDetectorArtifact[];
+  },
 };
 ```
 
 **约定：**
-- 未命中时返回 `{ artifacts: [] }`，不返回半成品 artifact
-- Detector 只产出 artifact，不执行宿主 mutation（`setTags` 等在 detector 模式受限）
-- `attachmentType` 须来自 manifest 已声明的 `attachmentTypes`
 
-### 4.2 Attachment Renderer
+- 未命中时返回 `[]`，不要返回半成品 artifact
+- Detector 内不应执行宿主 mutation（标签写入等）；那是 action 的职责
+- `attachmentType` 必须出自 manifest 的 `detectors[].attachmentTypes`
 
-**`resolveAttachment(input, ctx)` 入参：**
+### 5.2 Attachment Renderer
 
-```ts
-input.item                  // ClipboardItem（同 detector，无 content.payload）
-input.attachment.historyID
-input.attachment.owner
-input.attachment.attachmentType
-input.attachment.attachmentKey
-input.attachment.payloadJson  // 完整 attachment payload JSON 字符串，插件自行解析
-input.declaredActions         // object[]（当前为预留字段，通常为 []）
-```
+Runtime 入口**只有** `resolveAttachment`。所有按钮副作用、用户交互都在 UI 侧完成。
 
-**`resolveAttachment` 返回值：**
+入参 `PluginResolveAttachmentInput`：
 
 ```ts
-return {
-  displayName: 'Sample Card',          // string，建议始终返回
-  tintHex: '#2563EB',                  // string | null，卡片强调色
-  buttons: [
-    { id: 'copy-json', title: 'Copy JSON', isEnabled: true }
-  ]
-};
+input.item                       // PluginClipboardItem
+input.content                    // PluginContentEnvelope
+input.attachments                // PluginAttachmentRef[]
+input.attachment                 // PluginAttachmentEntry：当前要渲染的附件
+   .historyID
+   .owner
+   .attachmentType
+   .attachmentKey
+   .payloadJson                  // 完整 JSON 字符串；插件自行解析
 ```
 
-按钮不在 manifest 声明，由 `resolveAttachment` 每次动态返回。
-
-**`invokeOperation(input, ctx)` 入参：**
-
-```ts
-input.item           // ClipboardItem
-input.attachment     // AttachmentPayload
-input.buttonID       // string | null（宿主或 UI 触发的按钮 ID）
-input.params         // Record<string, PluginJSONValue>（UI 传入的结构化参数）
-input.triggerSource  // 'hostButton' | 'pluginUI'
-```
-
-**`invokeOperation` 返回值：**
-
-```js
-rendererResult.success({ userMessage: 'Done' });
-// 或
-rendererResult.failure('Something went wrong');
-```
-
-**Attachment renderer UI 生命周期：**
-
-```js
-import { pasty } from '@pasty/plugin-sdk/ui';
-
-await pasty.ready();
-// bootstrap 完成，可读取初始数据
-const item = pasty.item.current();
-const attachment = pasty.item.attachment.current();
-const payload = JSON.parse(attachment.payloadJson);
-
-// 订阅宿主推送的更新
-const unsub = pasty.item.attachment.on(newPayload => { /* 更新 UI */ });
-
-// 启动自适应高度（manifest 声明 height: { min, max } 时必须调用）
-const dispose = await pasty.window.autoFit({ min: 120, max: 480 });
-
-// 触发 runtime invokeOperation
-await pasty.item.attachment.invoke('copy-json', { format: 'pretty' });
-```
-
-### 4.3 Action
-
-**`resolveSession(input, ctx)` 入参：**
-
-```ts
-input.item.id, .type, .text, .tags, .sourceAppID   // ClipboardItem 字段
-input.action.id           // manifest actions[].id
-input.action.actionID     // plugin.id + "." + action.id
-input.action.title
-input.action.lifecycle    // 'auto-run' | 'draft'
-input.action.supportedItemTypes
-input.action.keywords
-input.action.uiEntry      // string | null
-input.action.buttons      // 初次 resolve 时通常为 []
-```
-
-**`resolveSession` 返回值：**
+返回值 `PluginAttachmentResolveResult`：
 
 ```ts
 return {
-  displayName: 'Compose Follow-up',       // string | null
-  buttons: [
-    { id: 'compose', title: 'Compose', isEnabled: true }
+  displayName: 'Sample Card',           // string | undefined；建议始终返回
+  tintHex: '#2563EB',                   // string | undefined；卡片强调色
+  shouldDisplay: true,                  // boolean | undefined（默认 true）
+  buttons: [                            // 可选首屏 seed
+    { id: 'copy-json', title: 'Copy JSON', isEnabled: true },
   ],
-  defaultButtonID: 'compose',             // string | null
-  initialDraft: { subject: '', note: '' } // Record<string, PluginJSONValue>
 };
 ```
 
-`auto-run` lifecycle 的 action 可省略 `resolveSession`；宿主按空 session 处理。
+**`shouldDisplay` 语义：** 宿主在 WebView 启动**之前**读取它。
 
-**`invokeOperation(input, ctx)` 入参（action 侧）：**
+- `true` / 省略 — 正常进入渲染队列
+- `false` — 宿主跳过该 attachment，**不**分配卡片位、**不**启动 WebView
+
+典型用法：payload 解析失败时静默退出，避免 UI 报错：
 
 ```ts
-input.item       // ClipboardItem
-input.draft      // Draft（全量快照，值类型为 PluginJSONValue）
-input.buttonID   // string | null（auto-run 时通常为 null）
-input.triggerSource  // 'autoRun' | 'hostButton' | 'pluginUI'
-```
-
-**`invokeOperation` 返回值（action 侧）：**
-
-```js
-actionResult.text('result text', { userMessage: 'Copied' });
-// 或
-actionResult.none({ userMessage: 'Applied metadata' });
-```
-
-Action 只能拿到 item snapshot 与当前 draft；**拿不到** detector 模式的 `input.content.payload`（`image.dataBase64`、`path_reference.entries` 等）。
-
-**Draft action UI 生命周期：**
-
-```js
-import { pasty } from '@pasty/plugin-sdk/ui';
-
-await pasty.ready();
-// bootstrap 完成
-const session = pasty.action.current();
-const draft = pasty.action.draft.current();
-
-// 用户输入时同步 draft 到宿主
-await pasty.action.draft.update({ subject: 'Hello', note: userInput });
-
-// 订阅宿主推送的 session 刷新
-const unsub = pasty.action.on(newSession => { /* 更新 UI */ });
-
-// 提交执行
-await pasty.action.invoke('compose');
-```
-
----
-
-## 5. 权限模型
-
-### manifest 声明
-
-```json
-{
-  "permissions": ["setTags", "setPinned"]
-}
-```
-
-插件在 `manifest.json` 的 `permissions` 数组中声明所需的 mutation 权限。未声明的权限不会注入到对应 SDK 方法。
-
-### 运行时检查
-
-在 Node runtime 侧，可通过 `ctx.host.capabilities` 在代码中检查当前已授权的权限集合：
-
-```js
-async setup(init) {
+async resolveAttachment(input, ctx) {
+  let parsed;
+  try {
+    parsed = JSON.parse(input.attachment.payloadJson);
+  } catch {
+    return { shouldDisplay: false };
+  }
+  if (!parsed.kind) return { shouldDisplay: false };
   return {
-    actions: {
-      'my-action': {
-        async invokeOperation(input, ctx) {
-          if (!ctx.host.capabilities.setTags) {
-            return actionResult.none({ userMessage: 'No setTags permission' });
-          }
-          const tags = await ctx.host.item.setTags(['processed']);
-          return actionResult.text(tags.join(', '));
-        }
-      }
-    }
+    displayName: parsed.title ?? 'Sample Card',
+    buttons: [{ id: 'copy-json', title: 'Copy JSON', isEnabled: true }],
   };
 }
 ```
 
-`ctx.host.capabilities` 是只读对象，反映 manifest 声明后经宿主验证的实际权限集合。
+**按钮 seed 与 UI 覆盖：** `resolveAttachment.buttons` 是首屏 seed（供宿主在 WebView 启动前渲染 native chrome）。UI 一旦调用 `pasty.attachmentRenderer.setButtons([...])`，列表被**整体替换**，seed 永远不再生效。**没有差分更新**——UI 每次推送完整列表。
 
-### 受门控的 Verb
+#### Renderer UI 典型生命周期
 
-| 权限 | 门控的 runtime Verb | 门控的 UI Verb |
+```ts
+import { pasty } from '@pasty/plugin-sdk/ui';
+
+const attachment = pasty.item.attachment.current();
+if (attachment) {
+  const payload = JSON.parse(attachment.payloadJson);
+  renderInitial(payload);
+}
+
+const unsub = pasty.item.attachment.on(newAttachment => {
+  renderInitial(JSON.parse(newAttachment.payloadJson));
+});
+
+// 启用自适应高度（manifest height: { min, max } 时必须调用）；
+// 实际像素由 UI 之后通过 pasty.window.setHeight({ height }) 持续上报，
+// 或使用 @pasty/plugin-sdk/dom 的 autoFit 辅助函数自动做 ResizeObserver。
+await pasty.window.autoFit();
+
+// 按需更新按钮（覆盖 seed）
+await pasty.attachmentRenderer.setButtons({
+  buttons: [
+    { id: 'copy-json', title: 'Copy JSON', isEnabled: true },
+    { id: 'copy-raw', title: 'Copy Raw', isEnabled: false },
+  ],
+});
+
+// 订阅宿主派发的按钮点击
+const unsubClick = pasty.attachmentRenderer.onHostInvoke.on(({ buttonID }) => {
+  if (buttonID === 'copy-json') {
+    pasty.clipboard.copyText({ text: JSON.stringify(payload, null, 2) });
+  }
+});
+```
+
+### 5.3 Action
+
+按 lifecycle 分叉为两种形态，runtime 入口不同：
+
+| lifecycle | runtime 入口 | UI 入口 |
 |---|---|---|
-| `setTags` | `ctx.host.item.setTags` / `addTags` / `removeTags` | `pasty.item.setTags` / `addTags` / `removeTags` |
-| `setPinned` | `ctx.host.item.setPinned` | `pasty.item.setPinned` |
-| `setAttachment` | `ctx.host.item.setAttachments` | `pasty.item.setAttachments` |
-| `setSearchExtension` | `ctx.host.item.setSearchExtension` | `pasty.item.setSearchExtension` |
+| `auto-run` | `runAutoAction(input, ctx)` | 无 |
+| `draft` | `resolveSession(input, ctx)`（可选） | 必填 `uiEntry`；UI 自管表单状态，最终调 `pasty.action.complete(...)` 提交 |
 
-**不受门控的 Verb：** `ctx.host.clipboard.*`、`ctx.host.navigation.*`、`ctx.host.settings.*`（只读）、`pasty.clipboard.*`、`pasty.navigation.*`、`pasty.settings.*`（只读）、`pasty.window.*`。
+#### resolveSession 入参
 
-### 最小权限原则
+```ts
+input.item                    // PluginClipboardItem
+input.content                 // PluginContentEnvelope
+input.attachments             // PluginAttachmentRef[]
+```
 
-只声明你实际需要调用的权限。未使用的权限声明不会导致功能异常，但会在宿主权限审查中显示为不必要的权限请求。
+#### resolveSession 返回值
 
----
+```ts
+return {
+  displayName: 'Apply Metadata',         // string | undefined
+  buttons: [                              // 可选首屏 seed
+    { id: 'apply', title: 'Apply', isEnabled: true },
+  ],
+  defaultButtonID: 'apply',               // string | undefined
+  initialDraft: { subject: '', note: '' } // Record<string, JSONValue>
+};
+```
 
-## 6. 插件入参形状
+`initialDraft` 由宿主存入 draft topic，UI 可通过 `pasty.action.draft.current()` 读到。`auto-run` lifecycle 可省略 `resolveSession`，宿主按空 session 处理。
 
-每个 handler（detector、attachment renderer、action）接收的 `input` 都遵循统一的 **ItemContext envelope**，再附带各自的专属字段。
+#### runAutoAction 入参
 
-### 6.1 ItemContext envelope
+```ts
+input.item                    // PluginClipboardItem
+input.content                 // PluginContentEnvelope
+input.attachments             // PluginAttachmentRef[]
+```
 
-```typescript
-interface ItemContext {
-  item: ClipboardItem;        // 剪贴板条目元信息（id、type、tags、sourceAppID）
-  content: ContentEnvelope;   // 内容快照，按 kind 区分
-  attachments: AttachmentRef[]; // 已有附件引用列表（attachmentType + attachmentKey）
+#### runAutoAction 返回值（用 `actionResult`）
+
+```ts
+const { actionResult } = require('@pasty/plugin-sdk/runtime');
+
+// text 结果
+actionResult.text('hello world', { userMessage: 'Copied' });
+// → { result: { resultKind: 'text', text: 'hello world' }, userMessage: 'Copied' }
+
+// image 结果（注意：第一个参数是 imageTempPath 字符串，不是对象）
+actionResult.image(imageTempPath, { imageFormatHint: 'png', userMessage: 'Saved' });
+
+// 仅副作用，无输出
+actionResult.none({ userMessage: 'Applied' });
+```
+
+签名：
+
+```ts
+actionResult.text(text: string, options?: { userMessage?: string })
+actionResult.image(imageTempPath: string, options?: { imageFormatHint?: string; userMessage?: string })
+actionResult.none(options?: { userMessage?: string })
+```
+
+#### Draft Action UI 生命周期（强类型）
+
+Draft 是**只读 OptionalTopic**：UI 通过 `current()` / `on()` 读宿主的 `initialDraft`。**SDK 不暴露 `draft.update()`**——UI 自管表单本地状态，最终通过 `pasty.action.complete(...)` 提交结果。如果 runtime 端需要参与（例如生成图片），通过 `pasty.runtime.invoke(...)` 桥接。
+
+```ts
+import { pasty } from '@pasty/plugin-sdk/ui';
+
+interface MyDraft { subject: string; note: string; }
+
+// 读 initialDraft 作为表单初始状态
+const initial = pasty.action.draft.current() as MyDraft | undefined;
+const form = reactive({ subject: initial?.subject ?? '', note: initial?.note ?? '' });
+
+// 订阅 host 推送的后续更新（罕见；通常 initialDraft 之后就由 UI 接管）
+pasty.action.draft.on(next => {
+  Object.assign(form, next);
+});
+
+// 订阅按钮点击
+pasty.action.onHostInvoke.on(({ buttonID }) => {
+  if (buttonID === 'apply') handleApply();
+});
+
+// 按需推送按钮列表（启用/禁用通过完整列表的 isEnabled 表达）
+await pasty.action.setButtons({
+  buttons: [
+    { id: 'apply', title: 'Apply', isEnabled: form.subject.length > 0 },
+    { id: 'cancel', title: 'Cancel', isEnabled: true },
+  ],
+});
+
+async function handleApply() {
+  await pasty.action.complete({
+    result: { resultKind: 'text', text: form.subject },
+    userMessage: 'Applied',
+  });
 }
 ```
 
-**ContentEnvelope** 的三种形态：
+#### Draft Action：UI 需要 runtime 协助时
 
-| kind | payload 字段 |
-|---|---|
-| `"text"` | `{ text: string }` |
-| `"image"` | `{ bytes: number, width: number, height: number, format: string }` |
-| `"path_reference"` | `{ entries: unknown[] }` |
+`pasty.action.complete` 接收 `{result: {resultKind: 'text' | 'image' | 'none', …}}`。**image 结果的 `imageTempPath` 必须由 runtime 端通过 `host.action.allocateImageTempPath` 分配**（UI 端没有这个能力），所以图片类 draft 的典型流程是：
 
-> **注意**：image 快照只携带字节数和尺寸，不含原始图片数据。若需要访问图片文件，在 action/detector 的 `ctx.host.item.materializeImagePath()` 中懒拷贝一份副本。
+```ts
+// shared/contracts.ts —— 两端共享类型契约
+import { defineMessage } from '@pasty/plugin-sdk/runtime';  // 或 /ui，类型相同
+export const GenerateImage = defineMessage<{ prompt: string }, { imageTempPath: string }>('generate-image');
 
-### 6.2 各 handler 专属字段
+// runtime/index.ts
+const { definePlugin, host } = require('@pasty/plugin-sdk/runtime');
+const fs = require('node:fs/promises');
+const { GenerateImage } = require('../shared/contracts');
 
-| Handler | 专属字段 |
-|---|---|
-| `DetectorInput` | 无（纯 ItemContext） |
-| `ResolveAttachmentInput` | `attachment`（attachment 元信息）、`declaredActions`（按钮声明） |
-| `AttachmentOperationInput` | `attachment`、`buttonID`、`params`、`triggerSource` |
-| `ActionSessionResolveInput` | `action`（action 元信息，含 id、lifecycle、buttons 等） |
-| `ActionRunInput` | `actionID`、`draft`、`buttonID`、`triggerSource?` |
+module.exports = definePlugin({
+  messageHandlers: Object.fromEntries([
+    GenerateImage.handle(async (req, ctx) => {
+      const { path } = await ctx.host.action.allocateImageTempPath({ formatHint: 'png' });
+      await fs.writeFile(path, await generateImage(req.prompt));
+      return { imageTempPath: path };
+    }),
+  ]),
+});
 
-### 6.3 Image 懒副本机制
+// UI 端
+import { defineMessage, pasty } from '@pasty/plugin-sdk/ui';
+const GenerateImage = defineMessage<{ prompt: string }, { imageTempPath: string }>('generate-image');
 
-图片类 item 的像素数据不在 `input.content.payload` 里传输。当插件需要读取图片文件时，调用：
-
-```javascript
-const imagePath = await ctx.host.item.materializeImagePath();
-// imagePath 是宿主复制到临时目录的副本路径，invocation 结束后自动清理
+async function handleApplyImage(prompt: string) {
+  const { imageTempPath } = await GenerateImage.invoke({ prompt }, { timeoutMs: 60_000 });
+  await pasty.action.complete({
+    result: { resultKind: 'image', imageTempPath, imageFormatHint: 'png' },
+  });
+}
 ```
 
-多次调用同一 invocation 中的 `materializeImagePath()` 返回同一路径（幂等）。
+> **不要**尝试通过 `runtime.invoke` 把图片字节传回 UI。postMessage 经 base64 + JSON 双重序列化，几 MB 图片就会卡顿数百 ms。让 runtime 直接写文件、只把路径返回给 UI。
+
+---
+
+## 6. 入参形状（ItemContext envelope）
+
+每个 handler 的 `input` 都遵守 **ItemContext envelope**：
+
+```ts
+interface ItemContext {
+  item: PluginClipboardItem;
+  content: PluginContentEnvelope;
+  attachments: PluginAttachmentRef[];
+}
+```
+
+各 handler 在此之上附加专属字段（见 §5）。
+
+### 6.1 `PluginContentEnvelope`：三种 kind，字段平铺在顶层
+
+**关键：字段直接挂在 `content` 上，没有 `.payload.` 间接层。**
+
+| kind | 字段 |
+|---|---|
+| `'text'` | `content.text: string` |
+| `'image'` | `content.width: number`, `content.height: number`, `content.format: string`, `content.bytes: number` |
+| `'path_reference'` | `content.entries: PluginPathEntry[]` |
+
+```ts
+switch (input.content.kind) {
+  case 'text':
+    console.log(input.content.text);
+    break;
+  case 'image':
+    console.log(`${input.content.width}x${input.content.height} ${input.content.format}`);
+    // input.content 不含像素数据，需要时调 host.item.materializeImagePath（见 §6.3）
+    break;
+  case 'path_reference':
+    for (const entry of input.content.entries) {
+      console.log(entry.kind, entry.path, entry.displayName);
+    }
+    break;
+}
+```
+
+`PluginPathEntry` 形状：
+
+```ts
+interface PluginPathEntry {
+  kind: 'file' | 'folder';
+  path: string;
+  displayName: string;
+}
+```
+
+### 6.2 `PluginClipboardItem`
+
+```ts
+interface PluginClipboardItem {
+  id: string;
+  type: string;          // 'text' | 'image' | 'path_reference'
+  tags: string[];
+  sourceAppID: string;
+}
+```
+
+> **历史变更：** 旧版 SDK 在 `item` 上有 `text`。新版**已移除**——文本走 `input.content.text`（且仅在 `kind === 'text'` 时存在）。
+
+### 6.3 图片懒副本机制
+
+`input.content`（image 情形）只携带元信息，不带像素。当 detector / action 需要读字节时：
+
+```ts
+const { path } = await ctx.host.item.materializeImagePath();
+// path 是宿主复制到临时目录的副本，invocation 结束后宿主自动清理。
+```
+
+同一 invocation 多次调用幂等返回同一路径。
 
 ### 6.4 Attachment 按需读
 
-```javascript
-const payloadJson = await ctx.host.item.readAttachment(attachmentType, attachmentKey);
-// 返回 JSON 字符串，或 null（attachment 不存在）
+```ts
+const { payloadJson } = await ctx.host.item.readAttachment({
+  attachmentType: 'plugin.example.sample.card',
+  attachmentKey: 'card-1',
+});
+if (payloadJson) {
+  const payload = JSON.parse(payloadJson);
+}
 ```
 
-`input.attachments` 给出当前 item 已有的附件引用列表，`readAttachment` 按需拉取内容，避免把所有附件都塞进入参。
+`input.attachments` 给出当前 item 已有的附件引用列表（`{attachmentType, attachmentKey}`）。`readAttachment` 按需拉取真正内容，避免把所有附件塞进入参。
 
 ### 6.5 Action 返回图片
 
-当 action 需要输出图片时，使用 `allocateImageTempPath` 申请临时路径写入文件，再用 `actionResult.image()` 返回：
+字节写入由 **runtime 端**完成，**不要**让 UI 写文件。两种推荐写法：
 
-```javascript
-const tmpPath = await ctx.host.action.allocateImageTempPath('png');
-// ... 将图片字节写入 tmpPath ...
-return actionResult.image(tmpPath, { formatHint: 'png' });
+**A. Auto-run action — runtime 一气呵成：**
+
+```ts
+const { definePlugin, actionResult } = require('@pasty/plugin-sdk/runtime');
+const fs = require('node:fs/promises');
+
+module.exports = definePlugin({
+  actions: {
+    'generate-image': {
+      async runAutoAction(input, ctx) {
+        const { path } = await ctx.host.action.allocateImageTempPath({ formatHint: 'png' });
+        await fs.writeFile(path, await generateImageBytes(input));
+        return actionResult.image(path, { imageFormatHint: 'png' });
+      },
+    },
+  },
+});
 ```
 
-宿主读取文件后自动清理临时目录。
+**B. Draft action — UI 触发 runtime 产文件，再由 UI 调 `complete`：** 见 §5.3 中的示例。
 
-### 6.6 `item.text` 迁移
+---
 
-旧版 SDK 在 `ClipboardItem` 上暴露了 `text` 字段，新版已移除。迁移方法：
+## 7. UI ↔ Runtime RPC（`pasty.runtime.invoke`）
 
-| 旧写法 | 新写法 |
+让 UI 调用插件自己的 Node runtime 逻辑，无需写 native 桥接。
+
+### 7.1 直接接口
+
+```ts
+import { pasty } from '@pasty/plugin-sdk/ui';
+
+// pasty.runtime.invoke<TResp> 直接返回 TResp（SDK 已自动解 wire envelope）
+const { title } = await pasty.runtime.invoke<{ title: string }>({
+  key: 'fetch-title',
+  payload: { url: 'https://example.com' },
+  timeoutMs: 10_000,  // 可选；默认 30_000 ms
+});
+```
+
+Runtime 端：
+
+```ts
+const { definePlugin } = require('@pasty/plugin-sdk/runtime');
+
+module.exports = definePlugin({
+  messageHandlers: {
+    'fetch-title': async (req, ctx) => {
+      const html = await fetch(req.url).then(r => r.text());
+      return { title: html.match(/<title>(.*?)<\/title>/)?.[1] ?? '' };
+    },
+  },
+});
+```
+
+### 7.2 `defineMessage` —— 两端共享契约（推荐写法）
+
+`defineMessage<TReq, TResp>(key)` 把字符串 key + 类型一起钉死，两端导入同一契约：
+
+```ts
+// shared/contracts.ts —— 仅做类型，避免拼字符串
+import { defineMessage } from '@pasty/plugin-sdk/runtime';   // 或 /ui，类型完全相同
+export const FetchTitle = defineMessage<{ url: string }, { title: string }>('fetch-title');
+
+// runtime/index.ts
+const { definePlugin } = require('@pasty/plugin-sdk/runtime');
+const { FetchTitle } = require('../shared/contracts');
+
+module.exports = definePlugin({
+  messageHandlers: Object.fromEntries([
+    FetchTitle.handle(async (req, ctx) => {
+      const html = await fetch(req.url).then(r => r.text());
+      return { title: html.match(/<title>(.*?)<\/title>/)?.[1] ?? '' };
+    }),
+  ]),
+});
+
+// ui/app.ts
+import { FetchTitle } from '../shared/contracts';
+const { title } = await FetchTitle.invoke({ url: 'https://example.com' }, { timeoutMs: 10_000 });
+```
+
+### 7.3 超时与错误
+
+- 默认超时 **30 秒**；用 `options.timeoutMs` 覆盖
+- handler 中 `throw` 一个 Error，UI 侧 `await` reject，`name` 与 `data` 跨进程保留：
+
+```ts
+// runtime 端
+throw Object.assign(new Error('rate limited'), {
+  name: 'RateLimitError',
+  data: { retryAfterSec: 60 },
+});
+
+// UI 端
+try {
+  await FetchTitle.invoke({ url });
+} catch (err: any) {
+  if (err.name === 'RateLimitError') {
+    console.log('retry in', err.data.retryAfterSec, 's');
+  }
+}
+```
+
+- **不**支持通过此通道传图片字节（参见 §6.5）
+
+---
+
+## 8. 权限模型
+
+### 8.1 manifest 声明
+
+```json
+{ "permissions": ["setTags", "setPinned"] }
+```
+
+未声明的权限对应方法在宿主侧 reject。
+
+### 8.2 受门控的 Verb
+
+| 权限 | runtime Verb |
 |---|---|
-| `input.item.text` | `input.content.payload.text`（仅在 `input.content.kind === "text"` 时有值） |
-| `input?.item?.text` | `input?.content?.payload?.text` |
+| `setTags` | `host.item.setTags` / `addTags` / `removeTags` |
+| `setPinned` | `host.item.setPinned` |
+| `setAttachment` | `host.item.setAttachments` |
+| `setSearchExtension` | `host.item.setSearchExtension` |
 
-### Q&A
+**不受门控：** `host.clipboard.*`、`host.navigation.*`、`host.settings.*`（只读）、`host.console.log`、`host.action.allocateImageTempPath`、`host.item.materializeImagePath`、`host.item.readAttachment`、所有 `pasty.*` 中的 UI 专属 verb（`window.*`、`action.setButtons`、`action.complete`、`attachmentRenderer.setButtons` 等）。
 
-**Q: detector 也能调用 `materializeImagePath` 吗？**  
-A: 可以，宿主从 v2 起为 detector 也创建了 invocation scope 和 dispatcher。但 detector 的 `timeoutMs` 只有 3000ms，大图片拷贝可能超时，请酌情使用。
+### 8.3 最小权限原则
 
-**Q: `content.payload.bytes` 是什么？**  
-A: 原始图片文件的字节数（来自宿主本地数据库），可用于展示文件大小或做条件判断，不保证与 `materializeImagePath()` 返回的副本字节数严格一致（副本可能经过格式转换）。
+只声明真正会调的权限。多声明不会导致功能异常，但会在宿主权限审查中显得可疑。
 
-**Q: `attachments` 列表什么时候有值？**  
-A: 宿主在调 detector 之前会查询当前 item 的全部附件引用，填入 `input.attachments`。若 item 尚无任何附件（例如首次检测），列表为空。
+---
 
-**Q: 临时目录什么时候清理？**  
-A: invocation 结束后宿主同步删除。宿主启动时还会扫描超过 1 小时的遗留目录并兜底清理。
+## 9. 常见坑点 Q&A
+
+**Q：监听器要等 `pasty.ready()` 才能注册吗？**
+
+A：不要。**SDK 没有 `pasty.ready()`**。监听器在模块加载时就注册——宿主 bootstrap 推送到达时会自动触发。同步读快照用 `.current()`，可能返回 `undefined`，用 `?.` / `??` 防御即可。
+
+**Q：`pasty.action.draft.update` 在哪？**
+
+A：**不存在**。Draft 是只读 OptionalTopic：UI 通过 `current()` / `on()` 读 `initialDraft`，之后自管表单本地状态，最终通过 `pasty.action.complete(...)` 提交。这是 plugin-api-shrink 的主动设计——宿主不需要知道每次按键。
+
+**Q：`pasty.theme.refresh()` / `pasty.theme.getThemeSnapshot()` 在哪？**
+
+A：**不存在**。`pasty.theme` 只有 `current()` 和 `on(fn)`。宿主在 WebView 启动时通过 `__PASTY_PLUGIN_THEME__` window global 注入快照，并通过 `pasty-plugin-theme` host event 推送更新，SDK 自动维护 Topic。
+
+**Q：旧版的 `pasty.action.allocateImageTempPath` 还在吗？**
+
+A：**已从 UI 端移除**。临时路径只能由 runtime 端通过 `host.action.allocateImageTempPath({formatHint?})` 申请，再由 runtime 写文件。如果 UI 需要触发，按 §5.3 的 draft action 模式：UI 调 `pasty.runtime.invoke(...)` → 自己的 `messageHandlers` → 在 runtime 里申请路径 + 写文件 + 把路径返回给 UI → UI 用 `pasty.action.complete({result: {resultKind: 'image', imageTempPath}})` 提交。
+
+**Q：旧版的 `ctx.host.capabilities.setTags` 检查在哪？**
+
+A：**已移除**。如果调用未授权的 verb，宿主侧 reject，错误会通过 `host.item.setTags(...)` 的 Promise 抛回来。在调用点 `try/catch` 即可。如果需要在执行前做条件分支，直接看 `manifest.json` 的 `permissions` 数组——它就是真相源。
+
+**Q：`actionResult.image` 的参数形状到底是什么？**
+
+A：第一个参数是 **`imageTempPath: string`**（不是对象）。选项里用 `imageFormatHint`：
+
+```ts
+actionResult.image(tempPath, { imageFormatHint: 'png', userMessage: 'Saved' });
+```
+
+**Q：`actionResult.none()` 返回值还有 `text: null` 吗？**
+
+A：没有。当前实现：`{ result: { resultKind: 'none' }, userMessage }`。
+
+**Q：detector 返回值是数组还是对象？**
+
+A：**数组**：`Promise<PluginDetectorArtifact[]>`。直接 `return [artifact1, artifact2]`，不要 `return { artifacts: [...] }`。未命中返回 `[]`。
+
+**Q：detector 也能调 `materializeImagePath` 吗？**
+
+A：可以。但 detector 的超时较短（3 秒级），大图拷贝可能超时，请酌情使用。
+
+**Q：`input.content.payload.text` 还存在吗？**
+
+A：不存在。`content` 的字段**平铺**在顶层：`content.text`（text）/`content.{width,height,format,bytes}`（image）/`content.entries`（path_reference）。
+
+**Q：`PluginPathEntry` 还存在吗？**
+
+A：是。`{kind: 'file' | 'folder', path: string, displayName: string}`，导出自生成的 `data.generated.ts`。被废弃的是无前缀的便利别名 `PathEntry`。
+
+**Q：临时目录什么时候清理？**
+
+A：invocation 结束后宿主同步删除。宿主启动时还会扫描 1 小时以上的遗留目录兜底清理。
+
+**Q：handler key 拼错了会怎样？**
+
+A：宿主无法寻址该 capability，调用静默失败或宿主侧报"未注册"。务必保证 `manifest.json` 的 `id` 与 `definePlugin({...})` 中 registry 的 key **完全一致**。
+
+**Q：怎么给 capability/host event 加新能力？**
+
+A：见 [`sdk/SPECIFICATION.md`](./sdk/SPECIFICATION.md) 第 3 章。简而言之：改 `protocol/plugin/src/catalog.ts` → 跑 `npm run codegen` → 在宿主端实现新方法 → 添测试。SDK 表面由 codegen 自动暴露。
+
+---
+
+## 10. 完整对照表
+
+要查具体某个 capability / host event / 类型的精确形状（payload、response、wire path、context），请直接看 [`sdk/API.md`](./sdk/API.md)——它是从 `protocol/plugin/src/catalog.ts` 由 codegen 直出，**保证与代码一致**。本 GUIDE 描述模式与约定，API.md 描述每个符号。
