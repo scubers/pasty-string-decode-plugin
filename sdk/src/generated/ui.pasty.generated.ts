@@ -6,7 +6,7 @@ import type { PluginActionCompletePayload, PluginActionCompleteResponse, PluginA
 import type { PluginAttachmentPayload, PluginClipboardItem, PluginThemeTokenSnapshot } from './data.generated.js';
 import type { PluginActionHostInvokePayload, PluginAttachmentHostInvokePayload, PluginContextPayload } from './topicSubscribers.generated.js';
 import { _actionDraftTopic, _actionOnHostInvokeStream, _attachmentRendererOnHostInvokeStream, _itemAttachmentTopic, _itemTopic, _pluginContextTopic, _themeTopic } from './ui.bootstrap.generated.js';
-import { requireContext } from '../internal/requireContext.js';
+import { guardContext } from './ui.bootstrap.generated.js';
 import { callRuntimeInvokeStrict } from '../internal/runtimeInvokeClient.js';
 
 export const pasty = {
@@ -37,9 +37,9 @@ export const pasty = {
       callNavigationOpenFilePath(payload),
   },
   action: {
-    setButtons: requireContext('action', (payload: PluginActionSetButtonsPayload): Promise<PluginActionSetButtonsResponse> =>
+    setButtons: guardContext('action', (payload: PluginActionSetButtonsPayload): Promise<PluginActionSetButtonsResponse> =>
       callActionSetButtons(payload)),
-    complete: requireContext('action', (payload: PluginActionCompletePayload): Promise<PluginActionCompleteResponse> =>
+    complete: guardContext('action', (payload: PluginActionCompletePayload): Promise<PluginActionCompleteResponse> =>
       callActionComplete(payload)),
     draft: {
       current: (): Record<string, unknown> | undefined => _actionDraftTopic.current(),
@@ -50,7 +50,7 @@ export const pasty = {
     },
   },
   attachmentRenderer: {
-    setButtons: requireContext('attachmentRenderer', (payload: PluginAttachmentRendererSetButtonsPayload): Promise<PluginAttachmentRendererSetButtonsResponse> =>
+    setButtons: guardContext('attachmentRenderer', (payload: PluginAttachmentRendererSetButtonsPayload): Promise<PluginAttachmentRendererSetButtonsResponse> =>
       callAttachmentRendererSetButtons(payload)),
     onHostInvoke: {
       on: (fn: (payload: PluginAttachmentHostInvokePayload) => void) => _attachmentRendererOnHostInvokeStream.on(fn),

@@ -303,7 +303,7 @@ All codegen-emitted type names carry the `Plugin` prefix:
 - `PluginActionInvocationTrigger` — 同上
 
 **不加 Plugin 前缀（动词 / 值命名空间）：**
-- TS 函数名: `callItemSetTags` / `onItemEvent` / `setActivePluginContext` — 动词前缀足够区分
+- TS 函数名: `callItemSetTags` / `onItemEvent` / `guardContext` — 动词前缀足够区分
 - 主机端 method 名: `emitItem` / `setBootstrap` — 同上
 - TS 顶层值导出: `pasty` / `actionResult` — 是值不是类型
 - 主机端 enum case 名: `itemSetTags`（在 `PluginUIHostMethod` / `PluginRuntimeHostMethod` enum 里）— enum 自身带 Plugin 前缀

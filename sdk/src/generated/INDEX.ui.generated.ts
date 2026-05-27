@@ -4,4 +4,4 @@
 export { pasty } from './ui.pasty.generated.js';
 export type * from './data.generated.js';
 export type * from './capabilityClients.generated.js';
-export { PluginContextError } from '../internal/requireContext.js';
+export { PluginContextError } from './ui.bootstrap.generated.js';

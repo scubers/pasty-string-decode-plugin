@@ -2,17 +2,13 @@
 // Regenerate via `cd protocol/plugin && npm run codegen`.
 // Source contract: protocol/plugin/src/catalog.ts
 import { createStream, createTopic, readWindowGlobal } from '../internal/topic.js';
-import { setActivePluginContext } from '../internal/requireContext.js';
 import type { PluginAttachmentPayload, PluginClipboardItem, PluginThemeTokenSnapshot } from './data.generated.js';
 import type { PluginActionHostInvokePayload, PluginAttachmentHostInvokePayload, PluginContextPayload } from './topicSubscribers.generated.js';
 import { onActionHostInvoke, onAttachment, onAttachmentHostInvoke, onContext, onDraft, onItem, onTheme } from './topicSubscribers.generated.js';
 
 export const _pluginContextTopic = createTopic<PluginContextPayload>(readWindowGlobal('__PASTY_PLUGIN_CONTEXT__'));
 
-onContext((p) => {
-  _pluginContextTopic.set(p);
-  setActivePluginContext(p.mode);
-});
+onContext((p) => _pluginContextTopic.set(p));
 
 export const _itemTopic = createTopic<PluginClipboardItem>(readWindowGlobal('__PASTY_PLUGIN_ITEM__'));
 
@@ -37,3 +33,26 @@ onAttachmentHostInvoke((p) => _attachmentRendererOnHostInvokeStream.emit(p));
 export const _actionOnHostInvokeStream = createStream<PluginActionHostInvokePayload>();
 
 onActionHostInvoke((p) => _actionOnHostInvokeStream.emit(p));
+
+export class PluginContextError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'PluginContextError';
+    }
+}
+
+export function guardContext<A extends unknown[], R>(
+    expected: 'attachmentRenderer' | 'action',
+    run: (...args: A) => R,
+): (...args: A) => R {
+    return (...args: A): R => {
+        const current = _pluginContextTopic.current()?.mode;
+        if (current !== expected) {
+            throw new PluginContextError(
+                `This verb is not available in the current plugin context ` +
+                `(expected: ${expected}, got: ${current || 'unknown'})`
+            );
+        }
+        return run(...args);
+    };
+}

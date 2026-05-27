@@ -32,7 +32,6 @@ export default [
     rules: {
       ...vuePlugin.configs['vue3-recommended'].rules,
       'vue/multi-word-component-names': 'off',
-      'vue/no-v-html': 'off',
       '@typescript-eslint/no-unused-vars': 'error',
       '@typescript-eslint/no-explicit-any': 'warn',
     },
