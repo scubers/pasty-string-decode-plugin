@@ -1,17 +1,22 @@
 import {
   tryDecodeBase64,
+  tryDecodeDateString,
   tryDecodeEscapedJson,
   tryDecodeJWT,
+  tryDecodeTimestamp,
   tryDecodeUrl,
   type JWTDecodeResult,
 } from "./decoders.ts";
+import { DEFAULT_TIME_FORMAT, formatEpoch } from "./timeFormat.ts";
 
 export const MAX_INPUT_CHARS = 256 * 1024;
 
 export interface DetectionResult {
-  encoding: "jwt" | "escaped_json" | "url" | "base64";
+  encoding: "jwt" | "escaped_json" | "url" | "base64" | "timestamp" | "date";
   decoded: string;
   jwt?: JWTDecodeResult;
+  epochMs?: number;
+  tsUnit?: "s" | "ms";
 }
 
 export function preprocess(rawText: string): { trimmed: string; bail: boolean } {
@@ -52,6 +57,25 @@ export function runPriorityChain(trimmed: string): DetectionResult | null {
     return {
       encoding: "url",
       decoded: url,
+    };
+  }
+
+  const timestamp = tryDecodeTimestamp(trimmed);
+  if (timestamp) {
+    return {
+      encoding: "timestamp",
+      decoded: formatEpoch(timestamp.epochMs, DEFAULT_TIME_FORMAT, "local"),
+      epochMs: timestamp.epochMs,
+      tsUnit: timestamp.unit,
+    };
+  }
+
+  const date = tryDecodeDateString(trimmed);
+  if (date) {
+    return {
+      encoding: "date",
+      decoded: String(date.epochMs),
+      epochMs: date.epochMs,
     };
   }
 

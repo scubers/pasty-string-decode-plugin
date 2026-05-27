@@ -48,6 +48,13 @@ const HEX_32 = "0123456789abcdef0123456789abcdef";
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const SHORT_RANDOM_6 = "AbCdEf";
 const CHINESE = "你好世界这是中文测试";
+const TS_SECONDS = "1716800000";
+const TS_MILLIS = "1716800000000";
+const TS_OUT_OF_RANGE = "9999999999";
+const NINE_DIGITS = "123456789";
+const DATE_ISO_DATE_ONLY = "2026-05-27";
+const DATE_ISO_ZONED = "2026-05-27T10:00:00Z";
+const VERSION_STRING = "1.2.3";
 
 test("decoders.tryDecodeJWT returns header+payload for a valid JWT", () => {
   const { tryDecodeJWT } = loadDecodersModule();
@@ -218,6 +225,61 @@ test("payload.original is truncated when input exceeds 4 KB", async () => {
   assert.equal(payload.truncated, true);
   assert.ok(payload.original.length <= 4096);
   assert.equal(payload.originalLength, longB64.length);
+});
+
+test("decoders.tryDecodeTimestamp accepts 10-digit seconds and 13-digit millis", () => {
+  const { tryDecodeTimestamp } = loadDecodersModule();
+  assert.deepEqual(tryDecodeTimestamp(TS_SECONDS), { epochMs: 1716800000000, unit: "s" });
+  assert.deepEqual(tryDecodeTimestamp(TS_MILLIS), { epochMs: 1716800000000, unit: "ms" });
+});
+
+test("decoders.tryDecodeTimestamp rejects out-of-range and wrong-length numbers", () => {
+  const { tryDecodeTimestamp } = loadDecodersModule();
+  assert.equal(tryDecodeTimestamp(TS_OUT_OF_RANGE), null); // seconds → year 2286
+  assert.equal(tryDecodeTimestamp(NINE_DIGITS), null); // 9 digits
+  assert.equal(tryDecodeTimestamp("123456789012"), null); // 12 digits
+});
+
+test("decoders.tryDecodeDateString parses zoned and date-only strings", () => {
+  const { tryDecodeDateString } = loadDecodersModule();
+  // Zoned input is timezone-independent.
+  assert.equal(tryDecodeDateString(DATE_ISO_ZONED).epochMs, Date.parse(DATE_ISO_ZONED));
+  // Date-only with no zone is interpreted as local midnight, not UTC.
+  assert.equal(tryDecodeDateString(DATE_ISO_DATE_ONLY).epochMs, new Date(2026, 4, 27).getTime());
+});
+
+test("decoders.tryDecodeDateString rejects pure numbers, version strings, and overflow dates", () => {
+  const { tryDecodeDateString } = loadDecodersModule();
+  assert.equal(tryDecodeDateString(TS_SECONDS), null); // pure number → timestamp's job
+  assert.equal(tryDecodeDateString(VERSION_STRING), null); // no date separator char
+  assert.equal(tryDecodeDateString("2026-13-40"), null); // calendar overflow
+  assert.equal(tryDecodeDateString(UUID), null); // unparseable
+});
+
+test("priority chain places timestamp and date before Base64", () => {
+  const { runPriorityChain } = loadDetectionModule();
+  assert.equal(runPriorityChain(TS_MILLIS).encoding, "timestamp");
+  assert.equal(runPriorityChain(TS_SECONDS).encoding, "timestamp");
+  assert.equal(runPriorityChain(DATE_ISO_ZONED).encoding, "date");
+  assert.equal(runPriorityChain(B64_LONG).encoding, "base64");
+});
+
+test("detector emits timestamp and date artifacts carrying epochMs", async () => {
+  const { createDecodeDetector } = loadDetectorModule();
+  const detector = createDecodeDetector();
+
+  const tsPayload = JSON.parse((await detector.detect(makeTextInput(TS_SECONDS)))[0].payloadJson);
+  assert.equal(tsPayload.encoding, "timestamp");
+  assert.equal(tsPayload.epochMs, 1716800000000);
+  assert.equal(tsPayload.tsUnit, "s");
+  assert.equal(tsPayload.decodedIsJSON, false);
+
+  const dateArtifacts = await detector.detect(makeTextInput(DATE_ISO_ZONED));
+  const datePayload = JSON.parse(dateArtifacts[0].payloadJson);
+  assert.equal(datePayload.encoding, "date");
+  assert.equal(datePayload.epochMs, Date.parse(DATE_ISO_ZONED));
+  assert.equal(datePayload.decodedIsJSON, false);
+  assert.equal(dateArtifacts[0].searchProjection.label, "Date");
 });
 
 test("decodePayload helpers validate and label payloads", () => {

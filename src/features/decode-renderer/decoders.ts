@@ -191,3 +191,83 @@ export function tryDecodeBase64(input: string): string | null {
 
   return printableRatio(decoded) < 0.95 ? null : decoded;
 }
+
+const TIMESTAMP_SECONDS_RE = /^\d{10}$/;
+const TIMESTAMP_MILLIS_RE = /^\d{13}$/;
+// Plausible epoch window: [2001-01-01, 2100-01-01) in ms. Anything outside is
+// almost certainly an ID / counter, not a timestamp.
+const MIN_PLAUSIBLE_EPOCH_MS = Date.UTC(2001, 0, 1);
+const MAX_PLAUSIBLE_EPOCH_MS = Date.UTC(2100, 0, 1);
+
+export interface TimestampDecodeResult {
+  epochMs: number;
+  unit: "s" | "ms";
+}
+
+export function tryDecodeTimestamp(input: string): TimestampDecodeResult | null {
+  let epochMs: number;
+  let unit: "s" | "ms";
+  if (TIMESTAMP_MILLIS_RE.test(input)) {
+    epochMs = Number(input);
+    unit = "ms";
+  } else if (TIMESTAMP_SECONDS_RE.test(input)) {
+    epochMs = Number(input) * 1000;
+    unit = "s";
+  } else {
+    return null;
+  }
+
+  if (!Number.isFinite(epochMs) || epochMs < MIN_PLAUSIBLE_EPOCH_MS || epochMs >= MAX_PLAUSIBLE_EPOCH_MS) {
+    return null;
+  }
+  return { epochMs, unit };
+}
+
+const PURE_NUMBER_RE = /^\d+$/;
+// A date string must carry at least one date/time separator or a month name —
+// this filters out bare tokens / version numbers that `Date.parse` would coerce.
+const DATE_SIGNAL_RE = /[-/:]|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i;
+// ISO date-only (`2026-05-27`) is parsed as UTC midnight by the spec; we want
+// "no time zone means local", so detect and construct it as local instead.
+const ISO_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MIN_PLAUSIBLE_DATE_YEAR = 1900;
+const MAX_PLAUSIBLE_DATE_YEAR = 2200;
+
+export interface DateStringDecodeResult {
+  epochMs: number;
+}
+
+export function tryDecodeDateString(input: string): DateStringDecodeResult | null {
+  // Pure numbers are handled by the timestamp decoder; keep the two mutually exclusive.
+  if (PURE_NUMBER_RE.test(input)) {
+    return null;
+  }
+  if (!DATE_SIGNAL_RE.test(input)) {
+    return null;
+  }
+
+  let epochMs: number;
+  const isoDateOnly = ISO_DATE_ONLY_RE.exec(input);
+  if (isoDateOnly) {
+    const year = Number(isoDateOnly[1]);
+    const month = Number(isoDateOnly[2]);
+    const day = Number(isoDateOnly[3]);
+    const local = new Date(year, month - 1, day);
+    // Reject calendar overflow such as 2026-13-40 that Date silently rolls over.
+    if (local.getFullYear() !== year || local.getMonth() !== month - 1 || local.getDate() !== day) {
+      return null;
+    }
+    epochMs = local.getTime();
+  } else {
+    epochMs = Date.parse(input);
+  }
+
+  if (!Number.isFinite(epochMs)) {
+    return null;
+  }
+  const year = new Date(epochMs).getFullYear();
+  if (year < MIN_PLAUSIBLE_DATE_YEAR || year > MAX_PLAUSIBLE_DATE_YEAR) {
+    return null;
+  }
+  return { epochMs };
+}

@@ -67,6 +67,9 @@ import type { PluginAttachmentPayload } from "@pasty/plugin-sdk/ui";
 import { useTopicRef } from "../../shared/composables/useTopicRef";
 import { highlightJson } from "../../shared/jsonHighlight";
 import { decodeDecodePayload, encodingLabel, type DecodePayload } from "./payload";
+import { DEFAULT_TIME_FORMAT, formatEpoch } from "./timeFormat";
+
+const TIMESTAMP_FORMAT_SETTING_KEY = "timestampFormat";
 
 const MIN_HEIGHT = 32;
 const MAX_HEIGHT = 480;
@@ -80,23 +83,41 @@ const payload = computed<DecodePayload | null>(() =>
 
 const localExpanded = ref<boolean>(false);
 const copied = ref<boolean>(false);
+const timeFormat = ref<string>(DEFAULT_TIME_FORMAT);
 
 const expanded = computed<boolean>(() => localExpanded.value);
 const encoding = computed<string>(() => payload.value?.encoding ?? "");
 const encodingLabelText = computed<string>(() => encodingLabel(encoding.value));
 
+function formattedLocalTime(p: DecodePayload): string {
+  return p.epochMs != null ? formatEpoch(p.epochMs, timeFormat.value, "local") : "";
+}
+
 const previewText = computed<string>(() => {
-  const text = payload.value?.decoded ?? "";
-  return text.replace(/\s+/g, " ").trim();
+  const p = payload.value;
+  if (!p) {
+    return "";
+  }
+  if (p.encoding === "timestamp") {
+    return formattedLocalTime(p);
+  }
+  if (p.encoding === "date") {
+    return p.epochMs != null ? String(p.epochMs) : "";
+  }
+  return (p.decoded ?? "").replace(/\s+/g, " ").trim();
 });
 
 const renderedDecoded = computed<string>(() => {
-  const text = payload.value?.decoded ?? "";
-  const isJson = payload.value?.encoding === "jwt" || payload.value?.decodedIsJSON === true;
-  if (isJson) {
-    return highlightJson(text);
+  const p = payload.value;
+  if (!p) {
+    return "";
   }
-  return escapeHtml(text);
+  if (p.encoding === "timestamp" || p.encoding === "date") {
+    return escapeHtml(buildTimeBody(p));
+  }
+  const text = p.decoded ?? "";
+  const isJson = p.encoding === "jwt" || p.decodedIsJSON === true;
+  return isJson ? highlightJson(text) : escapeHtml(text);
 });
 
 let unsubHostInvoke: (() => void) | null = null;
@@ -113,6 +134,43 @@ function escapeHtml(text: string): string {
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
   );
+}
+
+function buildTimeBody(p: DecodePayload): string {
+  if (p.epochMs == null) {
+    return "";
+  }
+  const epochMs = p.epochMs;
+  const local = formatEpoch(epochMs, timeFormat.value, "local");
+  const utc = formatEpoch(epochMs, timeFormat.value, "utc");
+  const iso = new Date(epochMs).toISOString();
+  if (p.encoding === "timestamp") {
+    const unitNote = p.tsUnit === "s" ? "from 10-digit seconds" : "from 13-digit milliseconds";
+    return [
+      `Local  ${local}`,
+      `UTC    ${utc}`,
+      `ISO    ${iso}`,
+      `Epoch  ${epochMs} ms (${unitNote})`,
+    ].join("\n");
+  }
+  return [
+    `Epoch (ms)  ${epochMs}`,
+    `Epoch (s)   ${Math.floor(epochMs / 1000)}`,
+    `Local       ${local}`,
+    `UTC         ${utc}`,
+  ].join("\n");
+}
+
+async function loadTimeFormat(): Promise<void> {
+  try {
+    const result = await pasty.settings.get({ key: TIMESTAMP_FORMAT_SETTING_KEY });
+    const value = result?.value;
+    if (typeof value === "string" && value.trim().length > 0) {
+      timeFormat.value = value;
+    }
+  } catch {
+    // Local preview may run without the host bridge; keep the default format.
+  }
 }
 
 function buttonsForCurrentState(): Array<{ id: string; title: string; isEnabled: boolean }> {
@@ -165,7 +223,15 @@ async function onCopyDecoded(): Promise<void> {
   if (!currentPayload) {
     return;
   }
-  await copyText(currentPayload.decoded);
+  let text: string;
+  if (currentPayload.encoding === "timestamp" && currentPayload.epochMs != null) {
+    text = formattedLocalTime(currentPayload);
+  } else if (currentPayload.encoding === "date" && currentPayload.epochMs != null) {
+    text = String(currentPayload.epochMs);
+  } else {
+    text = currentPayload.decoded;
+  }
+  await copyText(text);
   markCopied();
 }
 
@@ -297,6 +363,7 @@ watch(payload, syncMeasuredHeight, { immediate: true });
 
 onMounted(() => {
   unsubHostInvoke = pasty.attachmentRenderer.onHostInvoke.on(handleHostInvoke);
+  void loadTimeFormat();
   void syncMeasuredHeight();
 });
 
@@ -378,6 +445,8 @@ onUnmounted(() => {
 .chip--escaped_json { --chip-hue: 145; }
 .chip--url { --chip-hue: 220; }
 .chip--base64 { --chip-hue: 30; }
+.chip--timestamp { --chip-hue: 260; }
+.chip--date { --chip-hue: 350; }
 
 .preview {
   flex: 1;

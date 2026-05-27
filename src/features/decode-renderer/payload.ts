@@ -10,13 +10,15 @@ export const ATTACHMENT_KEY = "primary";
 export const ORIGINAL_TRUNCATION_BYTES = 4 * 1024;
 const SEARCH_TEXT_DECODED_LIMIT = 4096;
 
-export type DecodeEncoding = "jwt" | "escaped_json" | "url" | "base64";
+export type DecodeEncoding = "jwt" | "escaped_json" | "url" | "base64" | "timestamp" | "date";
 
 const ENCODING_LABELS: Record<DecodeEncoding, string> = Object.freeze({
   jwt: "JWT",
   escaped_json: "Escaped JSON",
   url: "URL",
   base64: "Base64",
+  timestamp: "Timestamp",
+  date: "Date",
 });
 
 export interface DecodePayload {
@@ -32,6 +34,8 @@ export interface DecodePayload {
     payload: unknown;
     signature: string;
   } | null;
+  epochMs: number | null;
+  tsUnit: "s" | "ms" | null;
   originalLength: number;
   decodedLength: number;
   expanded: boolean;
@@ -87,6 +91,13 @@ export function createDecodePayload(detectionResult: DetectionResult & { origina
       )
     : detectionResult.decoded;
 
+  const decodedIsJSON =
+    encoding === "jwt"
+      ? true
+      : encoding === "timestamp" || encoding === "date"
+        ? false
+        : isJsonString(decoded);
+
   return {
     kind: "decode_preview",
     version: 1,
@@ -94,8 +105,10 @@ export function createDecodePayload(detectionResult: DetectionResult & { origina
     original: originalForPayload,
     truncated,
     decoded,
-    decodedIsJSON: encoding === "jwt" ? true : isJsonString(decoded),
+    decodedIsJSON,
     jwt,
+    epochMs: typeof detectionResult.epochMs === "number" ? detectionResult.epochMs : null,
+    tsUnit: detectionResult.tsUnit ?? null,
     originalLength: detectionResult.original.length,
     decodedLength: decoded.length,
     expanded: false,
@@ -127,6 +140,10 @@ export function decodeDecodePayload(payloadJson: string | null | undefined): Dec
       }
     : null;
 
+  const epochMs =
+    typeof parsed.epochMs === "number" && Number.isFinite(parsed.epochMs) ? parsed.epochMs : null;
+  const tsUnit = parsed.tsUnit === "s" || parsed.tsUnit === "ms" ? parsed.tsUnit : null;
+
   return {
     kind: "decode_preview",
     version: 1,
@@ -136,6 +153,8 @@ export function decodeDecodePayload(payloadJson: string | null | undefined): Dec
     decoded: parsed.decoded,
     decodedIsJSON: Boolean(parsed.decodedIsJSON),
     jwt,
+    epochMs,
+    tsUnit,
     originalLength: Number(parsed.originalLength) || 0,
     decodedLength: Number(parsed.decodedLength) || 0,
     expanded: typeof parsed.expanded === "boolean" ? parsed.expanded : false,
