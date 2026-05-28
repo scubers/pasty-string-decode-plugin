@@ -78,10 +78,13 @@ test("decoders.tryDecodeJWT returns null when header lacks alg field", () => {
   assert.equal(tryDecodeJWT(bad), null);
 });
 
-test("decoders.tryDecodeEscapedJson returns the inner string", () => {
+test("decoders.tryDecodeEscapedJson returns the inner JSON container", () => {
   const { tryDecodeEscapedJson } = loadDecodersModule();
-  assert.equal(tryDecodeEscapedJson(ESCAPED_JSON_PLAIN), "Hello\nWorld\twith escapes");
   assert.equal(tryDecodeEscapedJson(ESCAPED_JSON_NESTED), '{"nested":"json"}');
+  // Quoted scalars decode to a string/number, not a container — must be rejected.
+  assert.equal(tryDecodeEscapedJson(ESCAPED_JSON_PLAIN), null);
+  assert.equal(tryDecodeEscapedJson('"108_test_10"'), null);
+  assert.equal(tryDecodeEscapedJson('"123"'), null);
 });
 
 test("decoders.tryDecodeEscapedJson decodes log-style escaped JSON without outer quotes", () => {
@@ -143,7 +146,7 @@ test("preprocess trims and enforces the 256 KB cap", () => {
 test("priority chain keeps JWT, escaped JSON, URL, Base64 order", () => {
   const { runPriorityChain } = loadDetectionModule();
   assert.equal(runPriorityChain(JWT_VALID).encoding, "jwt");
-  assert.equal(runPriorityChain(ESCAPED_JSON_PLAIN).encoding, "escaped_json");
+  assert.equal(runPriorityChain(ESCAPED_JSON_NESTED).encoding, "escaped_json");
   assert.equal(runPriorityChain(URL_JSON).encoding, "url");
   assert.equal(runPriorityChain(B64_LONG).encoding, "base64");
 });

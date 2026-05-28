@@ -30,6 +30,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isJsonContainer(text: string): boolean {
+  const result = safeJsonParse(text);
+  return result.ok && result.value !== null && typeof result.value === "object";
+}
+
 export function tryDecodeJWT(input: string): JWTDecodeResult | null {
   if (!JWT_REGEX.test(input)) {
     return null;
@@ -78,7 +83,7 @@ export function tryDecodeEscapedJson(input: string): string | null {
     } catch {
       parsed = undefined;
     }
-    if (typeof parsed === "string") {
+    if (typeof parsed === "string" && isJsonContainer(parsed)) {
       return parsed;
     }
   }
@@ -90,16 +95,7 @@ export function tryDecodeEscapedJson(input: string): string | null {
     } catch {
       return null;
     }
-    if (typeof unescaped !== "string") {
-      return null;
-    }
-    let validated: unknown;
-    try {
-      validated = JSON.parse(unescaped) as unknown;
-    } catch {
-      return null;
-    }
-    if (validated === null || typeof validated !== "object") {
+    if (typeof unescaped !== "string" || !isJsonContainer(unescaped)) {
       return null;
     }
     return unescaped;
