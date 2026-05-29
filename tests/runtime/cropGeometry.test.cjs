@@ -104,30 +104,27 @@ test("aspectRatioLabel reduces to an integer w:h ratio (never a decimal)", () =>
   assert.equal(geom.aspectRatioLabel(0, 100), "—");
 });
 
-test("boxFromCropSize sets width from original pixels, anchored top-left", () => {
-  // Original 800px shown at 400px display → 0.5 display px per original px.
-  const b = geom.boxFromCropSize({ x: 10, y: 10, width: 40, height: 40 }, { width: 200, height: null }, 400, 400, 800, 800, 1);
-  assert.equal(b.x, 10);
-  assert.equal(b.width, 100); // 200 orig × 0.5
-  assert.equal(b.height, 40); // unchanged when target is null
+test("scaleFromDim returns the value-to-crop ratio, clamped to (0,1]", () => {
+  assert.equal(geom.scaleFromDim(400, 800), 0.5);
+  assert.equal(geom.scaleFromDim(800, 800), 1);
+  assert.equal(geom.scaleFromDim(9999, 800), 1); // never upscales beyond the crop
+  assert.equal(geom.scaleFromDim(0, 800), 1 / 800); // clamped to >= 1px
+  assert.equal(geom.scaleFromDim(100, 0), 1); // degenerate crop → identity
 });
 
-test("boxFromCropSize clamps the target to the original size", () => {
-  const b = geom.boxFromCropSize({ x: 0, y: 0, width: 40, height: 40 }, { width: 9999, height: null }, 400, 400, 800, 800, 1);
-  assert.equal(b.width, 400); // clamped to origWidth 800 → display 400
-  assert.equal(b.x, 0);
+test("resolutionFromScale scales each side, clamped to [1, crop]", () => {
+  assert.deepEqual(geom.resolutionFromScale({ width: 800, height: 600 }, 0.5), { width: 400, height: 300 });
+  assert.deepEqual(geom.resolutionFromScale({ width: 800, height: 600 }, 1), { width: 800, height: 600 });
+  // Tiny scale never collapses a side below 1px.
+  assert.deepEqual(geom.resolutionFromScale({ width: 800, height: 600 }, 0.0001), { width: 1, height: 1 });
+  // Defensive: a scale > 1 (the UI never sends this) is still capped at the crop.
+  assert.deepEqual(geom.resolutionFromScale({ width: 800, height: 600 }, 2), { width: 800, height: 600 });
 });
 
-test("boxFromCropSize shifts the anchor inward when the box would overflow", () => {
-  const b = geom.boxFromCropSize({ x: 350, y: 0, width: 40, height: 40 }, { width: 200, height: null }, 400, 400, 800, 800, 1);
-  assert.equal(b.width, 100);
-  assert.equal(b.x, 300); // 400 - 100: shifted left to stay in bounds
-});
-
-test("boxFromCropSize ignores null / non-finite targets", () => {
-  const start = { x: 5, y: 5, width: 30, height: 30 };
-  const b = geom.boxFromCropSize(start, { width: null, height: Number.NaN }, 400, 400, 800, 800, 1);
-  assert.deepEqual(b, start);
+test("scaleFromDim + resolutionFromScale round-trip a typed width", () => {
+  const crop = { width: 800, height: 600 };
+  const s = geom.scaleFromDim(400, crop.width);
+  assert.deepEqual(geom.resolutionFromScale(crop, s), { width: 400, height: 300 });
 });
 
 test("parseDimInput accepts number (Vue casts type=number) and string, rejecting empty/invalid", () => {

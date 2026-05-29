@@ -51,6 +51,22 @@ export function clampCropToImage(crop: CropRect, imageWidth: number, imageHeight
 }
 
 /**
+ * Clamp a resize target to fit inside the crop with each side ≥ 1px. Enforces
+ * the UI invariant that the compression resolution never exceeds the crop, and
+ * guarantees the positive integers sharp.resize requires.
+ */
+export function clampResize(
+  resize: { width: number; height: number },
+  cropWidth: number,
+  cropHeight: number,
+): { width: number; height: number } {
+  return {
+    width: Math.min(Math.max(1, Math.round(resize.width)), cropWidth),
+    height: Math.min(Math.max(1, Math.round(resize.height)), cropHeight),
+  };
+}
+
+/**
  * Apply the format-specific encoder + quality. Preserves the source format:
  * JPEG/WebP use lossy quality; PNG (lossless) maps quality to libimagequant
  * palette quantization for real file-size reduction.
@@ -85,11 +101,17 @@ export async function processImage(host: ImageEditHost, req: ProcessImageReq): P
   const quality = clampQuality(req.quality);
 
   const { path: outPath } = await host.action.allocateImageTempPath({ formatHint: format });
-  await applyFormat(
-    sharp(srcPath).extract({ left: crop.x, top: crop.y, width: crop.width, height: crop.height }),
-    format,
-    quality,
-  ).toFile(outPath);
+  let pipeline = sharp(srcPath).extract({ left: crop.x, top: crop.y, width: crop.width, height: crop.height });
+  if (req.resize) {
+    const target = clampResize(req.resize, crop.width, crop.height);
+    // fit:"fill" outputs exactly target W×H; the target ratio is locked to the
+    // crop ratio by the UI, so there's no visible distortion. Skip the resampling
+    // no-op when the target already equals the crop (resolution at 100%).
+    if (target.width !== crop.width || target.height !== crop.height) {
+      pipeline = pipeline.resize(target.width, target.height, { fit: "fill" });
+    }
+  }
+  await applyFormat(pipeline, format, quality).toFile(outPath);
 
   return { imageTempPath: outPath, imageFormatHint: format };
 }

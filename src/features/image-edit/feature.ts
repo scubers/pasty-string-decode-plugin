@@ -27,7 +27,7 @@ const imageEditAction: PluginAutoRunActionHandler = {
     };
     return {
       displayName: "Crop & Compress",
-      buttons: [{ id: "apply", title: "应用", isEnabled: true }],
+      buttons: [{ id: "apply", title: "Apply", isEnabled: true }],
       defaultButtonID: "apply",
       initialDraft: draft as unknown as Record<string, unknown>,
     };

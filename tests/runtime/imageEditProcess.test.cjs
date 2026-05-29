@@ -40,6 +40,13 @@ test("clampCropToImage fits the crop inside the image with sides >= 1", () => {
   assert.ok(c.width >= 1 && c.height >= 1);
 });
 
+test("clampResize fits the target inside the crop with sides >= 1", () => {
+  assert.deepEqual(proc.clampResize({ width: 400, height: 300 }, 800, 600), { width: 400, height: 300 });
+  assert.deepEqual(proc.clampResize({ width: 9999, height: 9999 }, 800, 600), { width: 800, height: 600 });
+  assert.deepEqual(proc.clampResize({ width: 0, height: -5 }, 800, 600), { width: 1, height: 1 });
+  assert.deepEqual(proc.clampResize({ width: 100.6, height: 50.4 }, 800, 600), { width: 101, height: 50 });
+});
+
 test("processImage crops + re-encodes to the host temp path, preserving format", async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "ie-proc-"));
   const srcPath = path.join(dir, "src.png");
@@ -125,6 +132,68 @@ test("lower quality produces a smaller JPEG (spec acceptance baseline)", async (
     const sizeHigh = (await fsp.stat(outHigh)).size;
     const sizeLow = (await fsp.stat(outLow)).size;
     assert.ok(sizeLow < sizeHigh, `expected low quality (${sizeLow}B) < high quality (${sizeHigh}B)`);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("processImage downscales the cropped region to the resize target", async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "ie-proc-"));
+  const srcPath = path.join(dir, "src.png");
+  const outPath = path.join(dir, "out.png");
+  try {
+    await sharp({
+      create: { width: 200, height: 160, channels: 3, background: { r: 30, g: 90, b: 200 } },
+    })
+      .png()
+      .toFile(srcPath);
+
+    const host = {
+      item: { materializeImagePath: async () => ({ path: srcPath }) },
+      action: { allocateImageTempPath: async () => ({ path: outPath }) },
+    };
+
+    // Crop 100x80, then downscale to half → 50x40.
+    const resp = await proc.processImage(host, {
+      quality: 80,
+      crop: { x: 0, y: 0, width: 100, height: 80 },
+      resize: { width: 50, height: 40 },
+    });
+
+    const outMeta = await sharp(resp.imageTempPath).metadata();
+    assert.equal(outMeta.width, 50);
+    assert.equal(outMeta.height, 40);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("processImage clamps a resize target larger than the crop down to the crop size", async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "ie-proc-"));
+  const srcPath = path.join(dir, "src.png");
+  const outPath = path.join(dir, "out.png");
+  try {
+    await sharp({
+      create: { width: 120, height: 90, channels: 3, background: { r: 200, g: 200, b: 50 } },
+    })
+      .png()
+      .toFile(srcPath);
+
+    const host = {
+      item: { materializeImagePath: async () => ({ path: srcPath }) },
+      action: { allocateImageTempPath: async () => ({ path: outPath }) },
+    };
+
+    // resize larger than the crop must clamp to crop (never upscale).
+    const resp = await proc.processImage(host, {
+      quality: 80,
+      crop: { x: 0, y: 0, width: 60, height: 45 },
+      resize: { width: 999, height: 999 },
+    });
+
+    const outMeta = await sharp(resp.imageTempPath).metadata();
+    assert.equal(outMeta.width, 60);
+    assert.equal(outMeta.height, 45);
   } finally {
     await fsp.rm(dir, { recursive: true, force: true });
   }

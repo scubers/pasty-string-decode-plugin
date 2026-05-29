@@ -100,32 +100,30 @@ export function displayBoxToCrop(box: Box, displayWidth: number, origWidth: numb
 }
 
 /**
- * Resize the crop box to a target size expressed in ORIGINAL pixels, keeping the
- * top-left anchor fixed. Each axis is clamped to [1, original] before being
- * converted to display pixels; the result is clamped to the image bounds (so the
- * anchor only shifts up/left if the box would overflow). Pass null for an axis to
- * leave it unchanged — this is the inverse of displayBoxToCrop for the W/H inputs.
+ * Convert a target dimension (ORIGINAL pixels) on one axis into a scale factor
+ * ∈ (0,1] relative to the crop's size on that axis. The value is clamped to
+ * [1, cropDim] first, so the scale never implies upscaling (> 1) or a zero side.
+ * This is the W/H-input → source-of-truth direction (the inverse of
+ * resolutionFromScale).
  */
-export function boxFromCropSize(
-  box: Box,
-  target: { width: number | null; height: number | null },
-  displayWidth: number,
-  displayHeight: number,
-  origWidth: number,
-  origHeight: number,
-  minSize: number,
-): Box {
-  const sx = origWidth > 0 ? displayWidth / origWidth : 1; // display px per original px (x)
-  const sy = origHeight > 0 ? displayHeight / origHeight : 1; // display px per original px (y)
-  let width = box.width;
-  let height = box.height;
-  if (target.width !== null && Number.isFinite(target.width)) {
-    width = Math.min(Math.max(1, Math.round(target.width)), origWidth) * sx;
-  }
-  if (target.height !== null && Number.isFinite(target.height)) {
-    height = Math.min(Math.max(1, Math.round(target.height)), origHeight) * sy;
-  }
-  return clampBox({ x: box.x, y: box.y, width, height }, displayWidth, displayHeight, minSize);
+export function scaleFromDim(value: number, cropDim: number): number {
+  if (!(cropDim > 0)) return 1;
+  const clamped = Math.min(Math.max(1, value), cropDim);
+  return clamped / cropDim;
+}
+
+/**
+ * Derive the output resolution (ORIGINAL pixels) from a crop rect and a scale
+ * factor. Each side is rounded and clamped to [1, crop] so the result never
+ * exceeds the crop or collapses below 1px. This is the source-of-truth → display
+ * direction for the W/H inputs.
+ */
+export function resolutionFromScale(
+  crop: { width: number; height: number },
+  scale: number,
+): { width: number; height: number } {
+  const clampDim = (d: number): number => Math.min(d, Math.max(1, Math.round(d * scale)));
+  return { width: clampDim(crop.width), height: clampDim(crop.height) };
 }
 
 /**

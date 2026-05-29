@@ -30,6 +30,11 @@ export interface ImageEditDraft {
 export interface ProcessImageReq {
   quality: number;
   crop: CropRect;
+  /**
+   * Output resolution in ORIGINAL pixels, clamped to ≤ crop on each side.
+   * Omitted means "no resize" — the output keeps the crop's pixel dimensions.
+   */
+  resize?: { width: number; height: number };
 }
 
 /** runtime → UI response; fed straight into pasty.action.complete. */
